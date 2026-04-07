@@ -16,6 +16,34 @@ import re
 
 logger = logging.getLogger(__name__)
 
+# Try newest model first, fall back to widely-available Claude 3 Haiku
+_MODEL_FALLBACK = [
+    "claude-haiku-4-5-20251001",
+    "claude-3-5-haiku-20241022",
+    "claude-3-haiku-20240307",
+]
+
+
+def _call(client, prompt: str, max_tokens: int = 500) -> str:
+    """Call Claude with automatic model fallback. Returns response text."""
+    last_err = None
+    for model in _MODEL_FALLBACK:
+        try:
+            msg = client.messages.create(
+                model=model,
+                max_tokens=max_tokens,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return msg.content[0].text.strip()
+        except Exception as e:
+            last_err = e
+            err_str = str(e)
+            if "400" in err_str or "invalid_request" in err_str.lower() or "model" in err_str.lower():
+                logger.debug(f"Model {model} rejected ({err_str[:80]}), trying next...")
+                continue
+            raise  # Non-model errors (auth, network) — don't retry
+    raise last_err
+
 
 def keywords_for_niche(niche: str, count: int = 10) -> list[str]:
     """
@@ -39,6 +67,8 @@ def keywords_for_niche(niche: str, count: int = 10) -> list[str]:
         )
         return []
 
+    client = anthropic.Anthropic(api_key=api_key)
+
     prompt = f"""You are a dropshipping product researcher. A user wants to find winning products in this niche:
 
 NICHE: "{niche}"
@@ -57,13 +87,7 @@ Return ONLY a valid JSON array of strings, nothing else.
 Example for "pet products": ["cat water fountain", "dog anxiety vest", "automatic pet feeder", "retractable dog leash"]"""
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-        msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=400,
-            messages=[{"role": "user", "content": prompt}],
-        )
-        text = msg.content[0].text.strip()
+        text = _call(client, prompt, max_tokens=400)
         match = re.search(r"\[.*?\]", text, re.DOTALL)
         if not match:
             logger.debug(f"Niche keyword response had no JSON array: {text[:120]}")
@@ -76,7 +100,7 @@ Example for "pet products": ["cat water fountain", "dog anxiety vest", "automati
         logger.info(f"AI niche keywords for '{niche}': {result}")
         return result[:count]
     except Exception as e:
-        logger.debug(f"Niche keyword generation failed: {e}")
+        logger.warning(f"Niche keyword generation failed: {e}")
         return []
 
 
@@ -133,6 +157,8 @@ def expand_keywords_with_ai(
         logger.debug("No ANTHROPIC_API_KEY — skipping AI keyword expansion")
         return []
 
+    client = anthropic.Anthropic(api_key=api_key)
+
     samples = [b.strip() for b in ad_bodies if len(b.strip()) > 30]
     # Take a diverse spread: some from the beginning, some from the end
     if len(samples) > 40:
@@ -172,14 +198,7 @@ Return ONLY a valid JSON array of strings. No explanation.
 Example format: ["posture corrector", "led therapy mask", "knee compression sleeve", "automatic cat feeder"]"""
 
     try:
-        client = anthropic.Anthropic(api_key=api_key)
-
-        gen_msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=600,
-            messages=[{"role": "user", "content": generate_prompt}],
-        )
-        gen_text = gen_msg.content[0].text.strip()
+        gen_text = _call(client, generate_prompt, max_tokens=600)
         match = re.search(r"\[.*?\]", gen_text, re.DOTALL)
         if not match:
             logger.debug(f"AI generate step: no JSON array in: {gen_text[:120]}")
@@ -215,12 +234,7 @@ Reject a phrase if:
 Return ONLY the phrases that PASS as a valid JSON array. Keep the best {max_new} maximum.
 Return ONLY the JSON array, nothing else."""
 
-        verify_msg = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=400,
-            messages=[{"role": "user", "content": verify_prompt}],
-        )
-        verify_text = verify_msg.content[0].text.strip()
+        verify_text = _call(client, verify_prompt, max_tokens=400)
         vmatch = re.search(r"\[.*?\]", verify_text, re.DOTALL)
         if not vmatch:
             logger.debug(f"AI verify step: no JSON array, falling back to raw candidates")
