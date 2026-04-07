@@ -354,22 +354,36 @@ class FBAdsScraper:
 
     def _evaluate_pages(self) -> list[WinningProduct]:
         winners = []
-        total = len(self._page_ads)
 
-        for idx, (page_id, ads) in enumerate(self._page_ads.items(), 1):
+        for page_id, ads in self._page_ads.items():
+            # Filter blocklisted platforms — catches entries loaded from old state files
+            if any(term in page_id.lower() for term in _PLATFORM_BLOCKLIST):
+                continue
+            if ads and any(term in (ads[0].get("page_name") or "").lower()
+                           for term in _PLATFORM_BLOCKLIST):
+                continue
+
             fan_count = self._page_followers.get(page_id, self._avg_followers(ads))
 
             if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
+                logger.debug(f"  SKIP {page_id}: followers {fan_count} outside range")
                 continue
 
-            recent = [a for a in ads if _within_days(a, self.days)]
+            # All ads in the Ads Library are currently active — no need to filter
+            # by start date strictly.  We use a generous 90-day window only to
+            # exclude ads that have clearly been sitting stale for months.
+            recent = [a for a in ads if _within_days(a, max(self.days * 10, 90))]
             if not recent:
-                continue
+                recent = ads  # if nothing passes, use all (dates may not be parsed)
 
             for cluster in cluster_page_ads(recent):
                 # Sum "N ads use this creative" across all cards in the cluster
                 total_versions = sum(a.get("_ad_versions", 1) for a in cluster)
                 if total_versions < self.min_ads:
+                    logger.debug(
+                        f"  SKIP {page_id}: cluster has {total_versions} versions "
+                        f"(need {self.min_ads})"
+                    )
                     continue
 
                 shop_now = sum(
@@ -377,6 +391,7 @@ class FBAdsScraper:
                     if a.get("_has_shop_now") or has_shop_now_cta(a)
                 )
                 if self.require_shop_now and shop_now == 0:
+                    logger.debug(f"  SKIP {page_id}: no shop-now CTA detected")
                     continue
 
                 is_video = any(

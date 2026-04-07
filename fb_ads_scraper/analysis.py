@@ -161,7 +161,10 @@ def keyword_overlap(kw_set_a: set[str], kw_set_b: set[str], threshold: int = 3) 
 def cluster_page_ads(ads: list[dict]) -> list[list[dict]]:
     """
     Given a list of ads from ONE page, group them into product clusters.
-    Two ads belong to the same cluster if their keyword sets overlap by >= 3 words.
+    Two ads belong to the same cluster if their keyword sets share at least 1 word.
+    For small dropshipping pages (which usually promote one product) this
+    keeps the whole page's ads together rather than splitting them into
+    tiny groups that each fall below the min_ads threshold.
     Returns a list of clusters (each cluster is a list of ads).
     """
     if not ads:
@@ -178,7 +181,7 @@ def cluster_page_ads(ads: list[dict]) -> list[list[dict]]:
         cluster = [i]
         visited[i] = True
         for j in range(i + 1, n):
-            if not visited[j] and keyword_overlap(kw_sets[i], kw_sets[j]):
+            if not visited[j] and keyword_overlap(kw_sets[i], kw_sets[j], threshold=1):
                 cluster.append(j)
                 visited[j] = True
         clusters.append([ads[k] for k in cluster])
