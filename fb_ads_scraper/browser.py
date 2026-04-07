@@ -135,13 +135,20 @@ try {
         var hasVideo = container.querySelector('video') !== null
                     || (container.innerHTML || '').indexOf('<video') !== -1;
 
-        /* CTA */
+        /* CTA — capture text AND destination href */
         var ctaButton = '';
+        var ctaUrl = '';
         var btns = Array.prototype.slice.call(
             container.querySelectorAll('a,div[role="button"],button'));
         btns.forEach(function(el) {
             var t = (el.textContent || '').trim().toLowerCase();
-            if (CTA.indexOf(t) !== -1) ctaButton = (el.textContent || '').trim();
+            if (CTA.indexOf(t) !== -1) {
+                ctaButton = (el.textContent || '').trim();
+                /* Only grab href from real anchor tags — divs have no href */
+                if (!ctaUrl && el.tagName === 'A' && el.href) {
+                    ctaUrl = el.href;
+                }
+            }
         });
 
         var lowerText = fullText.toLowerCase();
@@ -198,6 +205,7 @@ try {
             has_video:     hasVideo ? true : false,
             has_shop_now:  hasShopNow ? true : false,
             cta_button:    clean(ctaButton),
+            cta_url:       ctaUrl,   /* raw href — do NOT clean, preserves l.php encoding */
             date_text:     clean(dateText),
             snapshot_url:  clean(snapshotUrl),
             ad_body:       clean(adBody),
@@ -407,6 +415,48 @@ class AdsLibraryBrowser:
             logger.debug(f"  get_page_ads error for {page_id}: {str(e)[:100]}")
 
         return follower_count, all_ads
+
+    def check_shopify_via_browser(self, url: str) -> tuple[bool, str]:
+        """
+        Navigate to the actual store URL and check the live page source for
+        Shopify signals. Returns (is_shopify: bool, reason: str).
+        Always navigates back to the previous Ads Library page when done.
+        """
+        from .shopify import decode_facebook_redirect, _SHOPIFY_HTML_PATTERNS
+        if not url or not self._driver:
+            return False, "no url"
+
+        destination = decode_facebook_redirect(url)
+        if not destination or not destination.startswith("http"):
+            return False, "could not decode url"
+
+        previous_url = self._driver.current_url
+        try:
+            self._driver.get(destination)
+            time.sleep(3)
+
+            final_url = self._driver.current_url
+            if "myshopify.com" in final_url:
+                return True, "browser: myshopify.com in URL"
+
+            source = self._driver.page_source or ""
+            for pattern in _SHOPIFY_HTML_PATTERNS:
+                if pattern.search(source):
+                    return True, f"browser: {pattern.pattern[:30]}"
+
+            return False, "browser: no shopify signals"
+
+        except WebDriverException as e:
+            msg = e.msg[:100] if hasattr(e, "msg") else str(e)[:100]
+            logger.debug(f"check_shopify_via_browser error: {msg}")
+            return False, f"browser error"
+
+        finally:
+            try:
+                self._driver.get(previous_url)
+                time.sleep(1.5)
+            except Exception:
+                pass
 
     def _dismiss_dialogs(self):
         for text in ["Allow all cookies", "Accept all",

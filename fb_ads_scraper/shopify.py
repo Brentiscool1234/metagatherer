@@ -9,7 +9,7 @@ Checks a URL to determine whether it resolves to a Shopify-powered store using:
 
 import logging
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, unquote
 
 import requests
 
@@ -39,6 +39,18 @@ _session.headers.update({
         "Chrome/124.0 Safari/537.36"
     )
 })
+
+
+def decode_facebook_redirect(url: str) -> str:
+    """Unwrap Facebook's l.php?u= redirect to get the real destination URL."""
+    if not url:
+        return ""
+    parsed = urlparse(url)
+    if parsed.netloc in ("l.facebook.com", "lm.facebook.com") or "l.php" in parsed.path:
+        qs = parse_qs(parsed.query)
+        if "u" in qs:
+            return unquote(qs["u"][0])
+    return url
 
 
 def _normalize_url(url: str) -> str:

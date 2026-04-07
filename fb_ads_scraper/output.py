@@ -1,32 +1,66 @@
 """
-Output layer: Rich terminal dashboard and CSV export.
+Rich terminal dashboard and CSV export.
 """
 
 import csv
 import os
-from typing import Optional
 
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
 from rich.align import Align
+from rich.columns import Columns
+from rich.text import Text
 from rich import box
 
 from .scraper import WinningProduct
+from .scoring import CRITERIA, WINNER_THRESHOLD, NEAR_MISS_THRESHOLD
 
 console = Console()
 
+_SCORE_BAR_WIDTH = 20
+
+
+def _score_bar(score: float) -> str:
+    filled = round((score / 10.0) * _SCORE_BAR_WIDTH)
+    filled = max(0, min(filled, _SCORE_BAR_WIDTH))
+    empty = _SCORE_BAR_WIDTH - filled
+    if score >= WINNER_THRESHOLD:
+        color = "bright_green"
+    elif score >= NEAR_MISS_THRESHOLD:
+        color = "yellow"
+    else:
+        color = "red"
+    bar = "█" * filled + "░" * empty
+    return f"[{color}]{bar} {score:.1f}/10[/{color}]"
+
 
 def _bool_icon(val: bool) -> str:
-    return "[green]✓[/green]" if val else "[red]✗[/red]"
+    return "[green]✓[/green]" if val else "[dim]✗[/dim]"
 
 
-def print_summary_banner(total_keywords: int, total_ads: int, total_pages: int, winner_count: int):
+def _breakdown_line(breakdown: dict) -> str:
+    parts = []
+    for key, (label, max_pts) in CRITERIA.items():
+        earned = breakdown.get(key, 0.0)
+        if earned >= max_pts:
+            color = "green"
+        elif earned > 0:
+            color = "yellow"
+        else:
+            color = "dim"
+        parts.append(f"[{color}]{label}: {earned:.1f}/{max_pts:.1f}[/{color}]")
+    return "  ".join(parts)
+
+
+def print_summary_banner(
+    total_keywords: int, total_ads: int, total_pages: int, winner_count: int
+):
     stats = (
-        f"[bold]Keywords searched:[/bold] {total_keywords}   "
-        f"[bold]Total ads collected:[/bold] {total_ads}   "
+        f"[bold]Keywords:[/bold] {total_keywords}   "
+        f"[bold]Ads collected:[/bold] {total_ads}   "
         f"[bold]Pages evaluated:[/bold] {total_pages}   "
-        f"[bold cyan]Winning products found:[/bold cyan] {winner_count}"
+        f"[bold cyan]Winners (≥{WINNER_THRESHOLD}):[/bold cyan] {winner_count}"
     )
     console.print(Panel(
         Align.center(stats),
@@ -35,105 +69,144 @@ def print_summary_banner(total_keywords: int, total_ads: int, total_pages: int, 
     ))
 
 
-def print_results_table(winners: list[WinningProduct], days: int):
-    if not winners:
-        console.print("\n[yellow]No winning products found. Try relaxing the filters or adding more keywords.[/yellow]\n")
+def print_results_table(products: list[WinningProduct], days: int):
+    """Full dashboard: winners table + near-misses + detail cards for top 5."""
+    if not products:
+        console.print("\n[yellow]No products found. Try --reset and a more specific niche.[/yellow]\n")
         return
 
-    table = Table(
-        title=f"[bold cyan]Winning Products[/bold cyan]",
-        box=box.ROUNDED,
-        show_lines=True,
-        highlight=True,
-        expand=True,
-    )
+    winners = [w for w in products if getattr(w, "score", 0) >= WINNER_THRESHOLD]
+    near_misses = [
+        w for w in products
+        if NEAR_MISS_THRESHOLD <= getattr(w, "score", 0) < WINNER_THRESHOLD
+    ]
 
-    table.add_column("#", style="dim", width=3, justify="right")
-    table.add_column("Page", style="bold", min_width=18)
-    table.add_column("Followers", justify="right", width=12)
-    table.add_column("Ads", justify="center", width=6)
-    table.add_column("Video", justify="center", width=6)
-    table.add_column("Shop Now", justify="center", width=9)
+    # ── Winners table ────────────────────────────────────────────
+    if winners:
+        console.print()
+        console.rule(f"[bold bright_green]  WINNERS  ({len(winners)} products, score ≥ {WINNER_THRESHOLD})  [/bold bright_green]")
+        _render_table(winners, show_rank=True)
+
+        console.print("[bold cyan]── Score Breakdown (Top 5) ──[/bold cyan]")
+        for i, w in enumerate(winners[:5], 1):
+            _print_detail_card(w, rank=i)
+    else:
+        console.print("\n[yellow]No products scored ≥ 7.0. See near-misses below.[/yellow]")
+
+    # ── Near-misses table ────────────────────────────────────────
+    if near_misses:
+        console.print()
+        console.rule(f"[bold yellow]  NEAR MISSES  ({len(near_misses)} products, score {NEAR_MISS_THRESHOLD}–{WINNER_THRESHOLD - 0.1:.1f})  [/bold yellow]")
+        _render_table(near_misses, show_rank=False)
+
+    console.print()
+
+
+def _render_table(products: list[WinningProduct], show_rank: bool):
+    table = Table(box=box.ROUNDED, show_lines=True, expand=True)
+
+    if show_rank:
+        table.add_column("#", style="dim", width=3, justify="right")
+    table.add_column("Page / Store", style="bold", min_width=18)
+    table.add_column("Score", min_width=26)
+    table.add_column("Ads", justify="center", width=5)
+    table.add_column("Followers", justify="right", width=11)
+    table.add_column("Vid", justify="center", width=4)
+    table.add_column("CTA", justify="center", width=4)
     table.add_column("Shopify", justify="center", width=8)
-    table.add_column("Keywords", min_width=20)
-    table.add_column("Ad Body (sample)", min_width=35)
+    table.add_column("Store URL", min_width=22, overflow="fold")
 
-    for i, w in enumerate(winners, 1):
+    for i, w in enumerate(products, 1):
+        score = getattr(w, "score", 0.0)
+        bar = _score_bar(score)
+
         fol = w.page_followers
-        if fol == 0:
-            fol_str = "[dim]unknown[/dim]"
-        elif fol <= 500:
-            fol_str = f"[green]{fol:,}[/green]"
-        else:
-            fol_str = f"[yellow]{fol:,}[/yellow]"
-
-        ad_color = "bright_green" if w.ad_count >= 20 else ("green" if w.ad_count >= 12 else "yellow")
-        ad_str = f"[{ad_color}]{w.ad_count}[/{ad_color}]"
-
-        preview = (w.sample_ad_body or "").strip()
-        if len(preview) > 90:
-            preview = preview[:87] + "..."
-
-        kws = ", ".join(w.keywords_matched[:4]) if w.keywords_matched else "—"
-
-        table.add_row(
-            str(i),
-            f"[link={w.page_url}]{w.page_name}[/link]",
-            fol_str,
-            ad_str,
-            _bool_icon(w.is_video),
-            _bool_icon(w.has_shop_now),
-            _bool_icon(w.is_shopify),
-            kws,
-            preview or "—",
+        fol_str = (
+            "[green]" + f"{fol:,}" + "[/green]" if 10 <= fol <= 500
+            else "[yellow]" + f"{fol:,}" + "[/yellow]" if fol > 0
+            else "[dim]?[/dim]"
         )
 
-    console.print()
+        ad_color = "bright_green" if w.ad_count >= 20 else "green" if w.ad_count >= 12 else "yellow"
+        ad_str = f"[{ad_color}]{w.ad_count}[/{ad_color}]"
+
+        shopify_icon = (
+            "[bright_green]✓✓[/bright_green]" if getattr(w, "shopify_confirmed_via_browser", False)
+            else "[green]✓[/green]" if w.is_shopify
+            else "[dim]✗[/dim]"
+        )
+
+        store = getattr(w, "store_url", "") or w.page_url or "—"
+        if len(store) > 40:
+            store = store[:37] + "..."
+
+        page_display = f"[link={w.page_url}]{w.page_name}[/link]"
+
+        row = [page_display, bar, ad_str, fol_str,
+               _bool_icon(w.is_video), _bool_icon(w.has_shop_now),
+               shopify_icon, store]
+        if show_rank:
+            row = [str(i)] + row
+        table.add_row(*row)
+
     console.print(table)
-    console.print()
-
-    if winners:
-        console.print("[bold cyan]── Top Results (detail) ──[/bold cyan]")
-        for w in winners[:5]:
-            _print_detail_card(w)
 
 
-def _print_detail_card(w: WinningProduct):
-    fol_display = f"{w.page_followers:,}" if w.page_followers > 0 else "unknown"
+def _print_detail_card(w: WinningProduct, rank: int):
+    score = getattr(w, "score", 0.0)
+    breakdown = getattr(w, "score_breakdown", {})
+    fol_str = f"{w.page_followers:,}" if w.page_followers > 0 else "unknown"
+    store = getattr(w, "store_url", "") or w.page_url or "—"
+
+    shopify_str = "✓ (browser-verified)" if getattr(w, "shopify_confirmed_via_browser", False) \
+        else "✓ (HTTP headers)" if w.is_shopify \
+        else f"✗  ({w.shopify_reason})"
+
     lines = [
-        f"[bold]{w.page_name}[/bold]  •  {fol_display} followers",
-        f"Page URL:     [cyan]{w.page_url or '—'}[/cyan]",
-        f"Active ads:   [bold green]{w.ad_count}[/bold green]  (total seen on page: {w.total_page_ads})",
-        f"Platforms:    {', '.join(w.publisher_platforms) or '—'}",
-        f"Video: {_bool_icon(w.is_video)}   Shop Now CTA: {_bool_icon(w.has_shop_now)}   "
-        f"Shopify: {_bool_icon(w.is_shopify)}  ({w.shopify_reason})",
-        f"Ad dates:     {', '.join(w.ad_start_dates[:5])}{'...' if len(w.ad_start_dates) > 5 else ''}",
-        f"Keywords:     [italic]{', '.join(w.keywords_matched[:8]) or '—'}[/italic]",
+        f"[bold]{_score_bar(score)}[/bold]",
+        f"[dim]{'─' * 50}[/dim]",
+        f"[bold]Page:[/bold]      {w.page_name}  •  {fol_str} followers",
+        f"[bold]Page URL:[/bold]  [cyan]{w.page_url or '—'}[/cyan]",
+        f"[bold]Store URL:[/bold] [cyan]{store}[/cyan]",
+        f"[bold]Ads:[/bold]       {w.ad_count} active  (total on page: {w.total_page_ads})",
+        f"[bold]Shopify:[/bold]   {shopify_str}",
+        f"[bold]Platforms:[/bold] {', '.join(w.publisher_platforms) or '—'}",
+        f"[bold]Ad dates:[/bold]  {', '.join(w.ad_start_dates[:5]) or '—'}{'...' if len(w.ad_start_dates) > 5 else ''}",
+        f"[bold]Keywords:[/bold]  [italic]{', '.join(w.keywords_matched[:6]) or '—'}[/italic]",
         "",
-        f"[dim]Sample body:[/dim]  {w.sample_ad_body or '—'}",
-        f"[dim]Snapshot:[/dim]     [cyan]{w.sample_snapshot_url or '—'}[/cyan]",
+        f"[bold]Score breakdown:[/bold]",
+        f"  {_breakdown_line(breakdown)}",
+        "",
+        f"[dim]Sample ad:[/dim] {(w.sample_ad_body or '—')[:200]}",
     ]
     console.print(Panel(
         "\n".join(lines),
-        title=f"[bold]#{i if (i := getattr(w, '_rank', '?')) else '?'} {w.page_name}[/bold]",
-        border_style="green",
+        title=f"[bold]#{rank} — {w.page_name}[/bold]",
+        border_style="bright_green" if score >= WINNER_THRESHOLD else "yellow",
         expand=False,
     ))
     console.print()
 
 
-def export_csv(winners: list[WinningProduct], path: str):
-    if not winners:
+def export_csv(products: list[WinningProduct], path: str):
+    if not products:
         console.print("[yellow]No results to export.[/yellow]")
         return
 
-    rows = [w.to_dict() for w in winners]
-    fieldnames = list(rows[0].keys())
+    rows = []
+    for w in products:
+        d = w.to_dict()
+        breakdown = getattr(w, "score_breakdown", {})
+        for key, (label, _) in CRITERIA.items():
+            d[f"score_{key}"] = breakdown.get(key, 0.0)
+        rows.append(d)
 
+    fieldnames = list(rows[0].keys())
     with open(path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(rows)
 
+    winners_count = sum(1 for w in products if getattr(w, "score", 0) >= WINNER_THRESHOLD)
     console.print(f"\n[bold green]✓ Exported to:[/bold green] [cyan]{os.path.abspath(path)}[/cyan]")
-    console.print(f"  {len(winners)} winning products, {len(fieldnames)} columns.\n")
+    console.print(f"  {winners_count} winners + {len(products) - winners_count} near-misses, {len(fieldnames)} columns.\n")

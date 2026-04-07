@@ -173,6 +173,7 @@ def _to_standard_ad(raw: dict, keyword: str) -> dict:
         "_keyword": keyword,
         # "N ads use this creative and text" — actual running ad count per card
         "_ad_versions": max(1, int(raw.get("ad_versions", 1) or 1)),
+        "_cta_url": raw.get("cta_url", ""),
     }
 
 
@@ -194,14 +195,17 @@ class WinningProduct:
 
     def to_dict(self) -> dict:
         return {
+            "score": getattr(self, "score", 0.0),
             "page_name": self.page_name,
             "page_id": self.page_id,
             "page_followers": self.page_followers,
             "page_url": self.page_url,
+            "store_url": getattr(self, "store_url", ""),
             "winning_ad_count": self.ad_count,
             "total_page_ads_seen": self.total_page_ads,
             "has_shop_now_cta": self.has_shop_now,
             "is_shopify_store": self.is_shopify,
+            "shopify_via_browser": getattr(self, "shopify_confirmed_via_browser", False),
             "shopify_detection_reason": self.shopify_reason,
             "video_ads_present": self.is_video,
             "ad_start_dates": "; ".join(self.ad_start_dates),
@@ -452,16 +456,20 @@ class FBAdsScraper:
 
         except KeyboardInterrupt:
             logger.warning("Interrupted — evaluating partial results...")
+
+        # Evaluate with browser still alive so it can visit store URLs
+        try:
+            results = self._evaluate_pages(browser)
         finally:
             browser.stop()
 
-        return self._evaluate_pages()
+        return results
 
     def _avg_followers(self, ads: list[dict]) -> int:
         counts = [a["_follower_count"] for a in ads if a.get("_follower_count", 0) > 0]
         return int(sum(counts) / len(counts)) if counts else 0
 
-    def _evaluate_pages(self) -> list[WinningProduct]:
+    def _evaluate_pages(self, browser=None) -> list[WinningProduct]:
         winners = []
 
         for page_id, ads in self._page_ads.items():
@@ -515,9 +523,28 @@ class FBAdsScraper:
                 page_url = next(
                     (a["page_url"] for a in cluster if a.get("page_url")), ""
                 )
+
+                # Get the real store URL from CTA buttons (unwrap l.php if needed)
+                from .shopify import decode_facebook_redirect
+                cta_url = next(
+                    (a.get("_cta_url", "") for a in cluster if a.get("_cta_url")), ""
+                )
+                store_url = decode_facebook_redirect(cta_url) if cta_url else ""
+
+                # Step 1: fast HTTP-based check
                 is_shopify, shopify_reason = False, "no url"
-                if page_url:
-                    is_shopify, shopify_reason = is_shopify_store(page_url)
+                check_url = store_url or page_url
+                if check_url:
+                    is_shopify, shopify_reason = is_shopify_store(check_url)
+
+                # Step 2: browser-based fallback — actually visit the store
+                shopify_via_browser = False
+                if browser and cta_url:
+                    if not is_shopify:
+                        is_shopify, shopify_reason = browser.check_shopify_via_browser(cta_url)
+                        shopify_via_browser = is_shopify
+                    else:
+                        shopify_via_browser = True  # already confirmed, no need to revisit
 
                 start_dates = sorted(
                     {a["_start_date"] for a in cluster if a.get("_start_date")}
@@ -527,17 +554,19 @@ class FBAdsScraper:
                 )
                 sample = cluster[0]
                 bodies = sample.get("ad_creative_bodies") or []
-                page_name = sample.get("page_name", page_id)
+                page_name_final = sample.get("page_name", page_id)
 
                 w = WinningProduct(
                     page_id=page_id,
-                    page_name=page_name,
+                    page_name=page_name_final,
                     page_followers=fan_count,
                     page_url=page_url,
-                    ad_count=total_versions,  # sum of "N ads use this creative"
+                    store_url=store_url,
+                    ad_count=total_versions,
                     total_page_ads=len(ads),
                     has_shop_now=shop_now > 0,
                     is_shopify=is_shopify,
+                    shopify_confirmed_via_browser=shopify_via_browser,
                     shopify_reason=shopify_reason,
                     is_video=is_video,
                     ad_start_dates=start_dates,
@@ -549,11 +578,21 @@ class FBAdsScraper:
                     ),
                 )
                 winners.append(w)
-                logger.info(
-                    f"  ✓ WINNER: {page_name} | {len(cluster)} ads | "
-                    f"{fan_count} followers | Shopify={is_shopify}"
-                )
 
-        winners.sort(key=lambda w: (-w.ad_count, not w.is_video, not w.is_shopify))
-        logger.info(f"Found {len(winners)} winning products.")
-        return winners
+        # Score everything, attach score, sort by score descending
+        from .scoring import score_product, WINNER_THRESHOLD
+        for w in winners:
+            w.score, w.score_breakdown = score_product(w)
+
+        winners.sort(key=lambda w: -w.score)
+        true_winners = [w for w in winners if w.score >= WINNER_THRESHOLD]
+        logger.info(
+            f"Evaluated {len(winners)} candidates → "
+            f"{len(true_winners)} scored ≥{WINNER_THRESHOLD}"
+        )
+        for w in true_winners:
+            logger.info(
+                f"  ✓ {w.page_name} | score={w.score} | {w.ad_count} ads | "
+                f"followers={w.page_followers} | Shopify={w.is_shopify}"
+            )
+        return winners  # return all so output.py can split winners vs near-misses

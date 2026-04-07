@@ -148,10 +148,14 @@ def main(
         niche=niche or None,
     )
 
-    winners = scraper.run(extra_keywords=list(keywords) if keywords else None)
+    from fb_ads_scraper.scoring import WINNER_THRESHOLD, NEAR_MISS_THRESHOLD
+
+    all_products = scraper.run(extra_keywords=list(keywords) if keywords else None)
 
     if video_only:
-        winners = [w for w in winners if w.is_video]
+        all_products = [w for w in all_products if w.is_video]
+
+    winners = [w for w in all_products if getattr(w, "score", 0) >= WINNER_THRESHOLD]
 
     print_summary_banner(
         total_keywords=len(scraper._searched_keywords),
@@ -159,12 +163,13 @@ def main(
         total_pages=len(scraper._page_ads),
         winner_count=len(winners),
     )
-    print_results_table(winners, days)
+    print_results_table(all_products, days)
 
-    if not no_csv and winners:
+    exportable = [w for w in all_products if getattr(w, "score", 0) >= NEAR_MISS_THRESHOLD]
+    if not no_csv and exportable:
         if output is None:
             output = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        export_csv(winners, output)
+        export_csv(exportable, output)
 
 
 if __name__ == "__main__":
