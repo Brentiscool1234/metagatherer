@@ -3,29 +3,25 @@ Selenium-based scraper for the Facebook Ads Library public website.
 No API key, no Meta approval, no login required.
 
 Install:  pip install selenium
-Chrome is auto-managed by Selenium 4.x — no separate driver download needed.
+Chrome driver is auto-managed by Selenium 4.x.
 """
 
 import logging
 import re
 import time
-from datetime import datetime, timezone, timedelta
 from typing import Optional
 from urllib.parse import urlencode
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import WebDriverException
 
 logger = logging.getLogger(__name__)
 
 ADS_LIBRARY_BASE = "https://www.facebook.com/ads/library/"
-
-SCROLL_DELAY = 2.5   # seconds between scrolls
-PAGE_LOAD_WAIT = 5   # seconds after navigation before extracting
+SCROLL_DELAY = 2.5
+PAGE_LOAD_WAIT = 5
 
 MONTH_MAP = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -37,7 +33,6 @@ MONTH_MAP = {
 
 
 def parse_follower_count(text: str) -> int:
-    """Parse '1,234 likes', '1.2K followers', '2.5M likes' → int."""
     t = text.lower().replace(",", "").strip()
     m = re.search(r"([\d.]+)\s*([km])?\s*(?:likes?|followers?)", t)
     if not m:
@@ -55,7 +50,6 @@ def parse_follower_count(text: str) -> int:
 
 
 def parse_date_text(text: str) -> Optional[str]:
-    """Extract YYYY-MM-DD from strings like 'Started running on March 1, 2024'."""
     if not text:
         return None
     t = text.lower()
@@ -70,43 +64,48 @@ def parse_date_text(text: str) -> Optional[str]:
     return None
 
 
-# JavaScript that runs inside the browser to extract ad card data.
-# Reused across scroll rounds — fast since it only reads the live DOM.
-_EXTRACT_JS = """
-() => {
-    const results = [];
-    const seen = new Set();
+# ---------------------------------------------------------------------------
+# Injected JavaScript — returns a plain JSON-safe array of ad objects.
+# Wrapped in try/catch so any JS error returns [] instead of crashing.
+# All strings are cleaned of control characters before returning.
+# ---------------------------------------------------------------------------
+_EXTRACT_JS = r"""
+var clean = function(s) {
+    if (!s) return '';
+    return String(s).replace(/[\u0000-\u001F\u007F\uFFFD]/g, ' ')
+                    .replace(/\s+/g, ' ').trim().slice(0, 300);
+};
 
-    const CTA_LABELS = new Set([
-        'shop now','buy now','order now','get yours','get it now',
-        'learn more','get offer','sign up','subscribe','get quote',
-        'contact us','get started','apply now','download',
-    ]);
+var results = [];
+var seen = [];
 
-    const pageLinks = Array.from(document.querySelectorAll('a[href]')).filter(a => {
-        const href = a.href || '';
-        const text = (a.textContent || '').trim();
-        return (
-            text.length >= 2 && text.length <= 120 &&
-            (href.includes('facebook.com/') || href.includes('fb.com/')) &&
-            !href.includes('/ads/library') &&
-            !href.includes('facebook.com/help') &&
-            !href.includes('facebook.com/login') &&
-            !href.includes('facebook.com/policies') &&
-            !href.includes('facebook.com/privacy') &&
-            !href.includes('/l.php')
-        );
+try {
+    var CTA = ['shop now','buy now','order now','get yours','get it now',
+               'learn more','get offer','sign up','subscribe'];
+
+    var links = Array.prototype.slice.call(document.querySelectorAll('a[href]'));
+    var pageLinks = links.filter(function(a) {
+        var href = a.href || '';
+        var txt = (a.textContent || '').trim();
+        return txt.length >= 2 && txt.length <= 100
+            && href.indexOf('facebook.com/') !== -1
+            && href.indexOf('/ads/library') === -1
+            && href.indexOf('facebook.com/help') === -1
+            && href.indexOf('facebook.com/login') === -1
+            && href.indexOf('/l.php') === -1
+            && href.indexOf('facebook.com/policies') === -1;
     });
 
-    pageLinks.forEach(link => {
-        let container = link.parentElement;
-        let found = false;
-        for (let i = 0; i < 12; i++) {
+    pageLinks.forEach(function(link) {
+        var container = link.parentElement;
+        var found = false;
+        for (var i = 0; i < 12; i++) {
             if (!container) break;
-            const t = container.innerText || '';
-            if (t.length > 200 && (
-                t.includes('Started running') || t.includes('running on') ||
-                /\\b202[3-9]\\b/.test(t)
+            var t = container.innerText || '';
+            if (t.length > 150 && (
+                t.indexOf('Started running') !== -1 ||
+                t.indexOf('running on') !== -1 ||
+                /202[3-9]/.test(t)
             )) {
                 found = true;
                 break;
@@ -114,99 +113,102 @@ _EXTRACT_JS = """
             container = container.parentElement;
         }
         if (!found || !container) return;
-        if (seen.has(container)) return;
-        seen.add(container);
+        if (seen.indexOf(container) !== -1) return;
+        seen.push(container);
 
-        const fullText = container.innerText || '';
-        const fullHtml = container.innerHTML || '';
-        const pageName = link.textContent.trim();
-        const pageUrl = link.href;
+        var fullText = container.innerText || '';
 
-        let followerText = '';
-        container.querySelectorAll('span, div').forEach(el => {
-            const t = (el.textContent || '').trim();
-            if (/[\\d,\\.]+\\s*[KkMm]?\\s*(likes?|followers?)/i.test(t) && t.length < 40) {
+        /* page name */
+        var pageName = clean(link.textContent);
+
+        /* follower text */
+        var followerText = '';
+        var spans = Array.prototype.slice.call(container.querySelectorAll('span,div'));
+        spans.forEach(function(el) {
+            var t = (el.textContent || '').trim();
+            if (/[\d][\d,.]*\s*[KkMm]?\s*(likes?|followers?)/i.test(t) && t.length < 40) {
                 if (t.length > followerText.length) followerText = t;
             }
         });
 
-        const hasVideo = (
-            container.querySelector('video') !== null ||
-            fullHtml.includes('<video') ||
-            fullText.toLowerCase().includes('video')
-        );
+        /* video */
+        var hasVideo = container.querySelector('video') !== null
+                    || (container.innerHTML || '').indexOf('<video') !== -1;
 
-        let ctaButton = '';
-        container.querySelectorAll('a, div[role="button"], button').forEach(el => {
-            const t = (el.textContent || '').trim().toLowerCase();
-            if (CTA_LABELS.has(t)) ctaButton = el.textContent.trim();
+        /* CTA */
+        var ctaButton = '';
+        var btns = Array.prototype.slice.call(
+            container.querySelectorAll('a,div[role="button"],button'));
+        btns.forEach(function(el) {
+            var t = (el.textContent || '').trim().toLowerCase();
+            if (CTA.indexOf(t) !== -1) ctaButton = (el.textContent || '').trim();
         });
 
-        const lowerText = fullText.toLowerCase();
-        const hasShopNow = (
-            ctaButton.toLowerCase().includes('shop') ||
-            ctaButton.toLowerCase().includes('buy') ||
-            ctaButton.toLowerCase().includes('order') ||
-            lowerText.includes('shop now') ||
-            lowerText.includes('buy now') ||
-            lowerText.includes('order now') ||
-            lowerText.includes('get yours')
-        );
+        var lowerText = fullText.toLowerCase();
+        var hasShopNow = ctaButton.toLowerCase().indexOf('shop') !== -1
+            || ctaButton.toLowerCase().indexOf('buy') !== -1
+            || ctaButton.toLowerCase().indexOf('order') !== -1
+            || lowerText.indexOf('shop now') !== -1
+            || lowerText.indexOf('buy now') !== -1
+            || lowerText.indexOf('order now') !== -1
+            || lowerText.indexOf('get yours') !== -1;
 
-        let dateText = '';
-        const dateMatch = fullText.match(/(?:Started running|Active since|running on)[^\\n]{0,60}/i);
-        if (dateMatch) dateText = dateMatch[0].trim();
+        /* start date */
+        var dateText = '';
+        var dm = fullText.match(/(?:Started running|Active since|running on)[^\n]{0,60}/i);
+        if (dm) dateText = dm[0];
         if (!dateText) {
-            const bare = fullText.match(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\\.?\\s+\\d{1,2},?\\s+\\d{4}/i);
-            if (bare) dateText = bare[0].trim();
+            var dm2 = fullText.match(/(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}/i);
+            if (dm2) dateText = dm2[0];
         }
 
-        let snapshotUrl = '';
-        container.querySelectorAll('a[href*="facebook.com/ads/archive"]').forEach(el => {
-            snapshotUrl = el.href;
-        });
+        /* snapshot url */
+        var snapshotUrl = '';
+        var snapLinks = Array.prototype.slice.call(
+            container.querySelectorAll('a[href*="ads/archive"]'));
+        if (snapLinks.length) snapshotUrl = snapLinks[0].href || '';
 
-        let adBody = '';
-        container.querySelectorAll('div, p, span').forEach(el => {
-            if (el.children.length > 5) return;
-            const t = (el.textContent || '').trim();
-            if (
-                t.length > adBody.length && t.length < 2000 &&
-                t !== pageName &&
-                !t.includes('Started running') &&
-                !t.match(/^\\d/)
-            ) {
+        /* ad body — longest single-child text block */
+        var adBody = '';
+        var nodes = Array.prototype.slice.call(
+            container.querySelectorAll('div,p,span'));
+        nodes.forEach(function(el) {
+            if (el.children.length > 4) return;
+            var t = (el.textContent || '').trim();
+            if (t.length > adBody.length && t.length < 800
+                && t !== pageName
+                && t.indexOf('Started running') === -1
+                && !/^\d/.test(t)) {
                 adBody = t;
             }
         });
 
-        const key = pageUrl + '|' + adBody.slice(0, 60);
+        var key = (link.href || '') + '|' + adBody.slice(0, 50);
+
         results.push({
-            _key: key,
-            page_name: pageName,
-            page_url: pageUrl,
-            follower_text: followerText,
-            has_video: hasVideo,
-            has_shop_now: hasShopNow,
-            cta_button: ctaButton,
-            date_text: dateText,
-            snapshot_url: snapshotUrl,
-            ad_body: adBody.slice(0, 400),
+            _key:          clean(key),
+            page_name:     pageName,
+            page_url:      clean(link.href),
+            follower_text: clean(followerText),
+            has_video:     hasVideo ? true : false,
+            has_shop_now:  hasShopNow ? true : false,
+            cta_button:    clean(ctaButton),
+            date_text:     clean(dateText),
+            snapshot_url:  clean(snapshotUrl),
+            ad_body:       clean(adBody)
         });
     });
-    return results;
+} catch(e) {
+    results.push({_error: String(e).slice(0, 200)});
 }
+return results;
 """
 
 
 def _make_driver(headless: bool = False) -> webdriver.Chrome:
-    """Create a Chrome WebDriver configured to blend in with normal traffic."""
     opts = Options()
-
     if headless:
         opts.add_argument("--headless=new")
-
-    # Blend in — remove obvious automation signals
     opts.add_argument("--disable-blink-features=AutomationControlled")
     opts.add_experimental_option("excludeSwitches", ["enable-automation"])
     opts.add_experimental_option("useAutomationExtension", False)
@@ -219,9 +221,7 @@ def _make_driver(headless: bool = False) -> webdriver.Chrome:
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     )
-
     driver = webdriver.Chrome(options=opts)
-    # Patch the navigator.webdriver flag
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
         {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"},
@@ -230,8 +230,6 @@ def _make_driver(headless: bool = False) -> webdriver.Chrome:
 
 
 class AdsLibraryBrowser:
-    """Selenium-driven scraper for the public Facebook Ads Library."""
-
     def __init__(self, countries: list[str], headless: bool = False):
         self.countries = countries
         self.headless = headless
@@ -252,7 +250,6 @@ class AdsLibraryBrowser:
         logger.info("Browser closed.")
 
     def search_keyword(self, keyword: str, max_ads: int = 120) -> list[dict]:
-        """Navigate to the Ads Library, search keyword, scroll, return ad dicts."""
         country = self.countries[0] if self.countries else "US"
         url = ADS_LIBRARY_BASE + "?" + urlencode({
             "active_status": "active",
@@ -263,26 +260,38 @@ class AdsLibraryBrowser:
             "media_type": "all",
         })
 
+        all_ads: list[dict] = []
+        seen_keys: set[str] = set()
+
         try:
-            logger.debug(f"  Navigating: {url}")
             self._driver.get(url)
             time.sleep(PAGE_LOAD_WAIT)
-
             self._dismiss_dialogs()
             time.sleep(1)
 
-            all_ads: list[dict] = []
-            seen_keys: set[str] = set()
+            # Log what page loaded so we can diagnose issues
+            title = self._driver.title
+            logger.debug(f"  Page title: {title}")
+
             no_new_rounds = 0
             max_scrolls = max(10, max_ads // 15)
 
-            for _ in range(max_scrolls):
-                raw = self._driver.execute_script(
-                    "return (" + _EXTRACT_JS + ")();"
-                ) or []
+            for scroll_n in range(max_scrolls):
+                try:
+                    raw = self._driver.execute_script(_EXTRACT_JS) or []
+                except WebDriverException as js_err:
+                    logger.warning(f"  JS error on scroll {scroll_n}: {js_err.msg[:120]}")
+                    break
+
+                # Check for JS-level errors
+                for item in raw:
+                    if "_error" in item:
+                        logger.warning(f"  JS reported: {item['_error']}")
 
                 added = 0
                 for ad in raw:
+                    if "_error" in ad:
+                        continue
                     k = ad.get("_key", "")
                     if k and k not in seen_keys:
                         seen_keys.add(k)
@@ -292,6 +301,7 @@ class AdsLibraryBrowser:
                 if added == 0:
                     no_new_rounds += 1
                     if no_new_rounds >= 3:
+                        logger.debug(f"  No new ads after 3 scrolls — stopping")
                         break
                 else:
                     no_new_rounds = 0
@@ -303,30 +313,21 @@ class AdsLibraryBrowser:
                 time.sleep(SCROLL_DELAY)
 
         except WebDriverException as e:
-            logger.warning(f"  Browser error scraping '{keyword}': {e}")
-            all_ads = []
+            logger.warning(f"  Browser error scraping '{keyword}': {e.msg[:200] if hasattr(e,'msg') else str(e)[:200]}")
 
         logger.info(f"  Scraped {len(all_ads)} ads for '{keyword}'")
         return all_ads
 
     def _dismiss_dialogs(self):
-        """Dismiss cookie banners and login prompts."""
-        dismiss_texts = [
-            "Allow all cookies", "Accept all",
-            "Allow essential and optional cookies",
-            "Only allow essential cookies", "Close", "OK",
-        ]
-        for text in dismiss_texts:
+        for text in ["Allow all cookies", "Accept all",
+                     "Allow essential and optional cookies",
+                     "Only allow essential cookies"]:
             try:
-                btn = self._driver.find_element(
-                    By.XPATH,
-                    f"//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ',"
-                    f"'abcdefghijklmnopqrstuvwxyz'), '{text.lower()}')]"
-                )
-                if btn.is_displayed():
-                    btn.click()
-                    time.sleep(0.8)
-                    logger.debug(f"  Dismissed: '{text}'")
-                    return
+                btns = self._driver.find_elements(By.XPATH, f"//button[contains(.,'{text}')]")
+                for btn in btns:
+                    if btn.is_displayed():
+                        btn.click()
+                        time.sleep(0.8)
+                        return
             except Exception:
                 pass
