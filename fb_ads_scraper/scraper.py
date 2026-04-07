@@ -1,15 +1,15 @@
 """
-Core scraping orchestration — browser-based (no API key required).
+Core scraping orchestration — Selenium browser-based, no API key required.
 
 BFS keyword expansion:
   Seed keywords → scrape public Ads Library → extract new keywords → repeat.
 
-For each discovered page:
-  - Filter by follower range (10–2000 by default)
-  - Group page ads into product clusters by keyword overlap
-  - Flag clusters with >= min_ads active ads started within `days` days
-  - Check for Shop Now CTA
-  - Run Shopify detection on the page website
+Filtering:
+  - Page follower count: 10–2000 (scraped from ad cards)
+  - Product clustering: group ads from same page by keyword overlap
+  - Winning threshold: >= min_ads ads in cluster within `days`-day window
+  - Shop Now CTA detection
+  - Shopify store verification
 """
 
 import logging
@@ -17,21 +17,8 @@ from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from .browser import (
-    AdsLibraryBrowser,
-    parse_follower_count,
-    parse_date_text,
-    run_search,
-    create_browser,
-    close_browser,
-)
-from .analysis import (
-    cluster_page_ads,
-    extract_new_keywords,
-    has_shop_now_cta,
-    get_ad_text,
-    extract_keywords,
-)
+from .browser import AdsLibraryBrowser, parse_follower_count, parse_date_text
+from .analysis import cluster_page_ads, extract_new_keywords, has_shop_now_cta, extract_keywords
 from .shopify import is_shopify_store
 
 logger = logging.getLogger(__name__)
@@ -50,16 +37,15 @@ SEED_KEYWORDS = [
 ]
 
 
-def _browser_ad_to_standard(raw: dict, keyword: str) -> dict:
-    """
-    Convert a raw browser-scraped ad dict into the same schema that
-    analysis.py expects (mirroring the old Graph API field names).
-    """
+def _to_standard_ad(raw: dict, keyword: str) -> dict:
+    """Convert a browser-scraped ad dict to the schema analysis.py expects."""
+    page_url = raw.get("page_url", "")
+    page_id = page_url.split("facebook.com/")[-1].split("?")[0].strip("/") if page_url else "unknown"
     return {
         "id": raw.get("_key", ""),
-        "page_id": raw.get("page_url", "").split("facebook.com/")[-1].split("?")[0],
+        "page_id": page_id,
         "page_name": raw.get("page_name", ""),
-        "page_url": raw.get("page_url", ""),
+        "page_url": page_url,
         "ad_creative_bodies": [raw.get("ad_body", "")],
         "ad_creative_link_captions": [raw.get("cta_button", "")],
         "ad_creative_link_titles": [],
@@ -68,26 +54,20 @@ def _browser_ad_to_standard(raw: dict, keyword: str) -> dict:
         "media_type": "VIDEO" if raw.get("has_video") else "IMAGE",
         "publisher_platforms": ["facebook"],
         "languages": [],
-        # Browser-only fields
-        "_follower_text": raw.get("follower_text", ""),
         "_follower_count": parse_follower_count(raw.get("follower_text", "")),
         "_has_shop_now": raw.get("has_shop_now", False),
-        "_date_text": raw.get("date_text", ""),
-        "_start_date": parse_date_text(raw.get("date_text", "") or ""),
+        "_start_date": parse_date_text(raw.get("date_text", "")),
         "_keyword": keyword,
     }
 
 
 def _within_days(ad: dict, days: int) -> bool:
-    """Return True if the ad's start date is within the last `days` days."""
     start = ad.get("_start_date")
     if not start:
-        # If we couldn't parse a date, include it (assume active)
-        return True
+        return True  # no date = assume active/recent
     try:
         dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
-        cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-        return dt >= cutoff
+        return dt >= datetime.now(timezone.utc) - timedelta(days=days)
     except ValueError:
         return True
 
@@ -146,24 +126,18 @@ class FBAdsScraper:
         self.max_ads_per_keyword = max_ads_per_keyword
         self.headless = headless
 
-        # page_id → list of standardized ad dicts
         self._page_ads: dict[str, list[dict]] = defaultdict(list)
-        # page_id → set of matched keywords
         self._page_keywords: dict[str, set[str]] = defaultdict(set)
-        # seen ad _keys to avoid double-counting
         self._seen_keys: set[str] = set()
-        # keywords already searched
         self._searched_keywords: set[str] = set()
 
-        self._browser: Optional[AdsLibraryBrowser] = None
-
-    def run(self, extra_keywords: list[str] = None) -> list["WinningProduct"]:
+    def run(self, extra_keywords: list[str] = None) -> list[WinningProduct]:
         seeds = list(SEED_KEYWORDS)
         if extra_keywords:
             seeds = list(extra_keywords) + seeds
 
-        logger.info(f"Starting browser...")
-        self._browser = create_browser(self.countries, headless=self.headless)
+        browser = AdsLibraryBrowser(countries=self.countries, headless=self.headless)
+        browser.start()
 
         try:
             queue: deque[tuple[str, int]] = deque((kw, 0) for kw in seeds)
@@ -178,7 +152,7 @@ class FBAdsScraper:
 
                 logger.info(f"[depth={depth}] Searching: '{keyword}' ({total}/{self.max_keywords})")
 
-                raw_ads = run_search(self._browser, keyword, max_ads=self.max_ads_per_keyword)
+                raw_ads = browser.search_keyword(keyword, max_ads=self.max_ads_per_keyword)
                 new_ads = []
 
                 for raw in raw_ads:
@@ -186,14 +160,14 @@ class FBAdsScraper:
                     if not key or key in self._seen_keys:
                         continue
                     self._seen_keys.add(key)
-                    ad = _browser_ad_to_standard(raw, keyword)
-                    page_id = ad.get("page_id", "unknown")
+                    ad = _to_standard_ad(raw, keyword)
+                    page_id = ad.get("page_id", "")
                     if page_id and page_id != "unknown":
                         self._page_ads[page_id].append(ad)
                         self._page_keywords[page_id].add(keyword)
                         new_ads.append(ad)
 
-                # Keyword expansion
+                # BFS keyword expansion
                 if depth < self.max_keyword_depth and new_ads:
                     new_kws = extract_new_keywords(new_ads, self._searched_keywords, max_new=6)
                     for kw in new_kws:
@@ -205,101 +179,77 @@ class FBAdsScraper:
                 f"Collection done. {len(self._page_ads)} pages, "
                 f"{len(self._seen_keys)} unique ads."
             )
+
         except KeyboardInterrupt:
             logger.warning("Interrupted — evaluating partial results...")
         finally:
-            if self._browser:
-                close_browser(self._browser)
+            browser.stop()
 
         return self._evaluate_pages()
 
-    def _evaluate_pages(self) -> list["WinningProduct"]:
+    def _evaluate_pages(self) -> list[WinningProduct]:
         winners = []
         total = len(self._page_ads)
 
         for idx, (page_id, ads) in enumerate(self._page_ads.items(), 1):
-            logger.info(f"Evaluating page {idx}/{total}: {page_id} ({len(ads)} ads)")
+            logger.info(f"Evaluating {idx}/{total}: {page_id} ({len(ads)} ads)")
 
-            # Use the follower count from the ads (scraped from the page card)
-            follower_counts = [a.get("_follower_count", 0) for a in ads if a.get("_follower_count", 0) > 0]
-            fan_count = int(sum(follower_counts) / len(follower_counts)) if follower_counts else 0
+            counts = [a["_follower_count"] for a in ads if a.get("_follower_count", 0) > 0]
+            fan_count = int(sum(counts) / len(counts)) if counts else 0
 
             if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
-                logger.debug(f"  Skip {page_id}: {fan_count} followers (need {self.min_followers}–{self.max_followers})")
+                logger.debug(f"  Skip: {fan_count} followers out of range")
                 continue
 
-            # Recency filter
-            recent_ads = [a for a in ads if _within_days(a, self.days)]
-            if not recent_ads:
-                logger.debug(f"  Skip {page_id}: no ads within {self.days}d window")
+            recent = [a for a in ads if _within_days(a, self.days)]
+            if not recent:
+                logger.debug(f"  Skip: no ads within {self.days}d")
                 continue
 
-            # Cluster by product similarity
-            clusters = cluster_page_ads(recent_ads)
-
-            for cluster in clusters:
+            for cluster in cluster_page_ads(recent):
                 if len(cluster) < self.min_ads:
                     continue
 
-                # Shop Now requirement
-                shop_now_count = sum(1 for a in cluster if a.get("_has_shop_now") or has_shop_now_cta(a))
-                if self.require_shop_now and shop_now_count == 0:
-                    logger.debug(f"  Cluster skipped: no Shop Now CTA")
+                shop_now = sum(1 for a in cluster if a.get("_has_shop_now") or has_shop_now_cta(a))
+                if self.require_shop_now and shop_now == 0:
                     continue
 
                 is_video = any((a.get("media_type") or "").upper() == "VIDEO" for a in cluster)
-                if self.prefer_video and not is_video:
-                    # Don't hard-exclude non-video, just note it
-                    pass
 
-                # Shopify check — use the page URL from the ads
-                page_url = next((a.get("page_url", "") for a in cluster if a.get("page_url")), "")
-                is_shopify, shopify_reason = False, "no url"
+                page_url = next((a["page_url"] for a in cluster if a.get("page_url")), "")
+                is_shopify, shopify_reason = (False, "no url")
                 if page_url:
                     is_shopify, shopify_reason = is_shopify_store(page_url)
 
-                # Collect dates
-                start_dates = []
-                for a in cluster:
-                    d = a.get("_start_date")
-                    if d:
-                        start_dates.append(d)
-
-                platforms: set[str] = set()
-                for a in cluster:
-                    pp = a.get("publisher_platforms") or []
-                    if isinstance(pp, list):
-                        platforms.update(pp)
-
+                start_dates = sorted({a["_start_date"] for a in cluster if a.get("_start_date")})
+                platforms = sorted({p for a in cluster for p in (a.get("publisher_platforms") or [])})
                 sample = cluster[0]
                 bodies = sample.get("ad_creative_bodies") or []
-                sample_body = bodies[0][:300] if bodies else ""
-
                 page_name = sample.get("page_name", page_id)
 
-                winner = WinningProduct(
+                w = WinningProduct(
                     page_id=page_id,
                     page_name=page_name,
                     page_followers=fan_count,
                     page_url=page_url,
                     ad_count=len(cluster),
                     total_page_ads=len(ads),
-                    has_shop_now=shop_now_count > 0,
+                    has_shop_now=shop_now > 0,
                     is_shopify=is_shopify,
                     shopify_reason=shopify_reason,
                     is_video=is_video,
-                    ad_start_dates=sorted(set(start_dates)),
-                    sample_ad_body=sample_body,
+                    ad_start_dates=start_dates,
+                    sample_ad_body=(bodies[0][:300] if bodies else ""),
                     sample_snapshot_url=sample.get("ad_snapshot_url", ""),
-                    publisher_platforms=sorted(platforms),
+                    publisher_platforms=platforms,
                     keywords_matched=sorted(self._page_keywords.get(page_id, set())),
                 )
-                winners.append(winner)
+                winners.append(w)
                 logger.info(
                     f"  ✓ WINNER: {page_name} | {len(cluster)} ads | "
                     f"{fan_count} followers | Shopify={is_shopify}"
                 )
 
         winners.sort(key=lambda w: (-w.ad_count, not w.is_video, not w.is_shopify))
-        logger.info(f"\nFound {len(winners)} winning product pages.")
+        logger.info(f"Found {len(winners)} winning products.")
         return winners

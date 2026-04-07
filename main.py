@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """
-MetaGatherer — FB Ads Library winning-product scraper (browser-based)
-======================================================================
-Automates the public Facebook Ads Library website using Playwright.
-No API key or Meta identity verification required.
+MetaGatherer — FB Ads Library winning-product scraper
+======================================================
+Uses Selenium to automate the PUBLIC Facebook Ads Library website.
+No API key. No Meta approval. No Facebook login. Zero ban risk.
 
-Usage:
+Setup:
+    pip install -r requirements.txt
     python main.py
-    python main.py --countries GB --days 3 --min-ads 15 --video-only
-    python main.py -k "posture corrector" -k "back pain"
+
+Examples:
+    python main.py
+    python main.py --countries GB --days 3 --min-ads 15
+    python main.py -k "posture corrector" -k "knee brace"
     python main.py --headless --output winners.csv
 """
 
 import logging
-import os
 import sys
 from datetime import datetime
 
@@ -25,13 +28,12 @@ console = Console()
 
 
 def _setup_logging(verbose: bool):
-    level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=level,
+        level=logging.DEBUG if verbose else logging.INFO,
         format="%(message)s",
         handlers=[RichHandler(console=console, rich_tracebacks=True, show_path=False)],
     )
-    for lib in ("urllib3", "requests", "charset_normalizer", "playwright"):
+    for lib in ("urllib3", "requests", "charset_normalizer", "selenium"):
         logging.getLogger(lib).setLevel(logging.WARNING)
 
 
@@ -47,25 +49,23 @@ def _setup_logging(verbose: bool):
 @click.option("--max-followers", default=2000, show_default=True, type=int,
               help="Maximum page follower count.")
 @click.option("--keywords", "-k", multiple=True,
-              help="Extra seed keywords (repeatable).")
+              help="Extra seed keywords (repeatable: -k 'posture corrector')")
 @click.option("--max-keywords", default=30, show_default=True, type=int,
-              help="Max total keywords to search (including BFS-discovered ones).")
+              help="Max total keywords to search including BFS-discovered ones.")
 @click.option("--keyword-depth", default=3, show_default=True, type=int,
-              help="BFS depth for keyword expansion (0 = seeds only).")
+              help="BFS depth for keyword expansion (0 = seed keywords only).")
 @click.option("--max-ads-per-keyword", default=120, show_default=True, type=int,
-              help="Max ads to scrape per keyword search.")
+              help="Max ads to collect per keyword search.")
 @click.option("--video-only/--no-video-only", default=False, show_default=True,
-              help="Only include pages that have video ads.")
+              help="Only include pages that have at least one video ad.")
 @click.option("--require-shop-now/--no-require-shop-now", default=True, show_default=True,
-              help="Require a Shop Now / Buy Now CTA in ad copy.")
+              help="Require Shop Now / Buy Now CTA detected in ad copy.")
 @click.option("--headless/--no-headless", default=False, show_default=True,
-              help="Run browser in headless mode (no visible window).")
+              help="Run Chrome headlessly (no visible window). Default: visible.")
 @click.option("--output", "-o", default=None,
-              help="CSV output path (auto-named with timestamp if omitted).")
-@click.option("--no-csv", is_flag=True, default=False,
-              help="Skip CSV export.")
-@click.option("--verbose", "-v", is_flag=True, default=False,
-              help="Enable debug logging.")
+              help="CSV output path. Auto-named with timestamp if omitted.")
+@click.option("--no-csv", is_flag=True, default=False, help="Skip CSV export.")
+@click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
 def main(
     countries, days, min_ads, min_followers, max_followers,
     keywords, max_keywords, keyword_depth, max_ads_per_keyword,
@@ -85,8 +85,8 @@ def main(
         f"Followers: [bold]{min_followers}–{max_followers}[/bold]"
     )
     console.print(
-        f"  Video only: [bold]{video_only}[/bold]  |  "
-        f"Require Shop Now: [bold]{require_shop_now}[/bold]  |  "
+        f"  Require Shop Now: [bold]{require_shop_now}[/bold]  |  "
+        f"Video only: [bold]{video_only}[/bold]  |  "
         f"Max keywords: [bold]{max_keywords}[/bold] (depth {keyword_depth})  |  "
         f"Headless: [bold]{headless}[/bold]"
     )
@@ -94,8 +94,8 @@ def main(
 
     if not headless:
         console.print(
-            "[dim]A Chrome window will open — this is normal. "
-            "Don't close it while the scan is running.[/dim]\n"
+            "[dim]A Chrome window will open and navigate the public Ads Library. "
+            "Don't close it while scanning.[/dim]\n"
         )
 
     scraper = FBAdsScraper(
