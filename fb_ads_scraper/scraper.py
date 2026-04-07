@@ -23,6 +23,21 @@ from .state import save_state, load_state, state_summary, DEFAULT_STATE_FILE
 
 logger = logging.getLogger(__name__)
 
+# Pages/ads from these platforms are supplier marketplaces, not dropshipping stores
+_PLATFORM_BLOCKLIST = {
+    "alibaba", "aliexpress", "temu", "1688", "dhgate", "shein",
+    "wish.com", "banggood",
+}
+
+def _is_blocked(raw: dict) -> bool:
+    """Return True if this ad is from a supplier marketplace we want to skip."""
+    check = " ".join([
+        (raw.get("page_name") or "").lower(),
+        (raw.get("page_url") or "").lower(),
+        (raw.get("ad_body") or "").lower(),
+    ])
+    return any(term in check for term in _PLATFORM_BLOCKLIST)
+
 SEED_KEYWORDS = [
     "buy now",
     "shop now",
@@ -212,6 +227,9 @@ class FBAdsScraper:
                     key = raw.get("_key", "")
                     if not key or key in self._seen_keys:
                         continue
+                    if _is_blocked(raw):
+                        self._seen_keys.add(key)  # mark seen so we don't re-process
+                        continue
                     self._seen_keys.add(key)
                     ad = _to_standard_ad(raw, keyword)
                     page_id = ad.get("page_id", "")
@@ -272,6 +290,9 @@ class FBAdsScraper:
             )
 
             for pid, existing_ads in promising.items():
+                # Skip supplier marketplace pages entirely
+                if any(term in pid.lower() for term in _PLATFORM_BLOCKLIST):
+                    continue
                 fan_count = self._page_followers.get(pid, self._avg_followers(existing_ads))
                 # Skip pages obviously outside follower range
                 if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
@@ -287,6 +308,9 @@ class FBAdsScraper:
                 for raw in page_ads:
                     key = raw.get("_key", "")
                     if not key or key in self._seen_keys:
+                        continue
+                    if _is_blocked(raw):
+                        self._seen_keys.add(key)
                         continue
                     self._seen_keys.add(key)
                     ad = _to_standard_ad(raw, "page_visit")
