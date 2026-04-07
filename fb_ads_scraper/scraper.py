@@ -155,6 +155,8 @@ class FBAdsScraper:
             total = 0
             all_bodies_for_ai: list[str] = []
 
+            all_page_names_for_ai: list[str] = []
+
             while queue and total < self.max_keywords:
                 keyword, depth = queue.popleft()
                 if keyword in self._searched_keywords:
@@ -180,6 +182,9 @@ class FBAdsScraper:
                         body = raw.get("ad_body", "")
                         if body:
                             all_bodies_for_ai.append(body)
+                        pname = raw.get("page_name", "")
+                        if pname:
+                            all_page_names_for_ai.append(pname)
 
                 if depth < self.max_keyword_depth and new_ads:
                     # Try AI expansion first, fall back to frequency-based
@@ -188,6 +193,7 @@ class FBAdsScraper:
                             all_bodies_for_ai[-60:],  # recent bodies
                             self._searched_keywords,
                             max_new=8,
+                            page_names=all_page_names_for_ai[-40:],
                         )
                         for kw in ai_kws:
                             if kw not in self._searched_keywords:
