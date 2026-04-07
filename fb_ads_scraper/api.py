@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 FB_API_VERSION = "v19.0"
 BASE_URL = f"https://graph.facebook.com/{FB_API_VERSION}"
 
-# Fields to request from ads_archive
+# Fields to request from ads_archive.
+# NOTE: impressions, spend, bylines require Meta Research API access
+# (restricted to approved researchers). Removed to avoid 400 errors for
+# standard developer tokens.
 ADS_FIELDS = ",".join([
     "id",
     "ad_creation_time",
@@ -31,10 +34,7 @@ ADS_FIELDS = ",".join([
     "publisher_platforms",
     "media_type",
     "languages",
-    "impressions",
-    "spend",
     "currency",
-    "bylines",
 ])
 
 PAGE_FIELDS = "fan_count,name,website,category,link"

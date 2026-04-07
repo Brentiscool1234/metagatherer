@@ -302,10 +302,8 @@ class FBAdsScraper:
                     if isinstance(ll, list):
                         langs.update(ll)
 
-                imp = sample_ad.get("impressions") or {}
-                imp_range = f"{imp.get('lower_bound', '?')}–{imp.get('upper_bound', '?')}" if imp else "?"
-                spend = sample_ad.get("spend") or {}
-                spend_range = f"{spend.get('lower_bound', '?')}–{spend.get('upper_bound', '?')}" if spend else "?"
+                imp_range = "n/a"   # requires Meta Research API access
+                spend_range = "n/a"  # requires Meta Research API access
 
                 winner = WinningProduct(
                     page_id=page_id,
