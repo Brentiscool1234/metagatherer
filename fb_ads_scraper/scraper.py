@@ -17,7 +17,7 @@ from typing import Optional
 
 from .browser import AdsLibraryBrowser, parse_follower_count, parse_date_text
 from .analysis import cluster_page_ads, extract_new_keywords, has_shop_now_cta
-from .ai_keywords import expand_keywords_with_ai
+from .ai_keywords import expand_keywords_with_ai, keywords_for_niche
 from .shopify import is_shopify_store
 from .state import save_state, load_state, state_summary, DEFAULT_STATE_FILE
 
@@ -138,6 +138,7 @@ class FBAdsScraper:
         use_ai: bool = True,
         state_file: str = DEFAULT_STATE_FILE,
         reset: bool = False,
+        niche: str = None,
     ):
         self.countries = countries or ["US"]
         self.days = days
@@ -152,6 +153,7 @@ class FBAdsScraper:
         self.headless = headless
         self.use_ai = use_ai
         self.state_file = state_file
+        self.niche = niche
 
         self._page_ads: dict[str, list[dict]] = defaultdict(list)
         self._page_keywords: dict[str, set[str]] = defaultdict(set)
@@ -185,7 +187,23 @@ class FBAdsScraper:
         }
 
     def run(self, extra_keywords: list[str] = None) -> list[WinningProduct]:
-        seeds = list(SEED_KEYWORDS)
+        # If a niche was given, let AI generate targeted seed keywords for it.
+        # These replace the generic seeds (buy now / shop now / etc.) so the
+        # BFS starts inside the niche right away.
+        if self.niche and self.use_ai:
+            niche_kws = keywords_for_niche(self.niche, count=10)
+            if niche_kws:
+                logger.info(f"Niche '{self.niche}' → AI seeds: {niche_kws}")
+                seeds = niche_kws
+            else:
+                logger.warning(
+                    f"AI couldn't generate keywords for niche '{self.niche}' "
+                    f"— falling back to generic seeds."
+                )
+                seeds = list(SEED_KEYWORDS)
+        else:
+            seeds = list(SEED_KEYWORDS)
+
         if extra_keywords:
             seeds = list(extra_keywords) + seeds
 

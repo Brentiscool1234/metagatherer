@@ -48,6 +48,9 @@ def _setup_logging(verbose: bool):
               help="Minimum page follower count.")
 @click.option("--max-followers", default=2000, show_default=True, type=int,
               help="Maximum page follower count.")
+@click.option("--niche", "-n", default=None,
+              help="Product niche to focus on (e.g. 'pet products', 'home fitness gear'). "
+                   "AI will generate targeted seed keywords instead of generic ones.")
 @click.option("--keywords", "-k", multiple=True,
               help="Extra seed keywords (repeatable: -k 'posture corrector')")
 @click.option("--max-keywords", default=30, show_default=True, type=int,
@@ -72,7 +75,7 @@ def _setup_logging(verbose: bool):
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
 def main(
     countries, days, min_ads, min_followers, max_followers,
-    keywords, max_keywords, keyword_depth, max_ads_per_keyword,
+    niche, keywords, max_keywords, keyword_depth, max_ads_per_keyword,
     video_only, require_shop_now, headless, output, no_csv,
     state_file, reset, verbose,
 ):
@@ -85,6 +88,8 @@ def main(
     import os
 
     console.rule("[bold cyan]MetaGatherer — FB Ads Library Scanner[/bold cyan]")
+    if niche:
+        console.print(f"  Niche: [bold magenta]{niche}[/bold magenta]  (AI will generate seed keywords)")
     console.print(
         f"  Countries: [bold]{', '.join(countries)}[/bold]  |  "
         f"Lookback: [bold]{days}d[/bold]  |  "
@@ -135,6 +140,7 @@ def main(
         headless=headless,
         state_file=state_file,
         reset=reset,
+        niche=niche or None,
     )
 
     winners = scraper.run(extra_keywords=list(keywords) if keywords else None)

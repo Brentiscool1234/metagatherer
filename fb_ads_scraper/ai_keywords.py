@@ -16,6 +16,67 @@ import re
 
 logger = logging.getLogger(__name__)
 
+
+def keywords_for_niche(niche: str, count: int = 10) -> list[str]:
+    """
+    Given a niche description (e.g. "pet products", "home fitness gear"),
+    ask Claude for the best FB Ads Library search terms to kick off a scan.
+
+    Returns a list of product-phrase keywords, or [] if AI is unavailable.
+    Falls back to a small generic seed list so the scraper still works.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        logger.debug("anthropic not installed — can't generate niche keywords")
+        return []
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        logger.debug("No ANTHROPIC_API_KEY — can't generate niche keywords")
+        return []
+
+    prompt = f"""You are a dropshipping product researcher. A user wants to find winning products in this niche:
+
+NICHE: "{niche}"
+
+Generate {count} search keyword phrases to type into the Facebook Ads Library search box that will surface active dropshipping product ads in this niche.
+
+Rules:
+- Each phrase must describe a SPECIFIC physical product, 2–4 words
+- Think like a dropshipper looking for products to test: specific enough to find real product ads
+- NO generic words (good, best, cheap, buy, shop, free, fast, sale, discount, shipping)
+- NO brand names
+- NO single-word terms
+- Cover a variety of product types within the niche
+
+Return ONLY a valid JSON array of strings, nothing else.
+Example for "pet products": ["cat water fountain", "dog anxiety vest", "automatic pet feeder", "retractable dog leash"]"""
+
+    try:
+        client = anthropic.Anthropic(api_key=api_key)
+        msg = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=400,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = msg.content[0].text.strip()
+        match = re.search(r"\[.*?\]", text, re.DOTALL)
+        if not match:
+            logger.debug(f"Niche keyword response had no JSON array: {text[:120]}")
+            return []
+        keywords = json.loads(match.group())
+        result = [
+            k.lower().strip() for k in keywords
+            if isinstance(k, str) and 3 <= len(k.strip()) <= 80
+        ]
+        logger.info(f"AI niche keywords for '{niche}': {result}")
+        return result[:count]
+    except Exception as e:
+        logger.debug(f"Niche keyword generation failed: {e}")
+        return []
+
+
 # Known-good dropshipping product phrase patterns — used to seed and
 # cross-check the AI's suggestions even without an API key.
 _DROPSHIP_SEED_PHRASES = [
