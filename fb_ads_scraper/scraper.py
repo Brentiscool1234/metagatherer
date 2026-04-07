@@ -19,7 +19,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-from .api import FBApiClient
+from .api import FBApiClient, FBApiError
 from .analysis import (
     cluster_page_ads,
     extract_new_keywords,
@@ -213,6 +213,13 @@ class FBAdsScraper:
             existing_ids = {a.get("id") for a in all_ads}
             all_ads.extend(a for a in other_ads if a.get("id") not in existing_ids)
 
+        except FBApiError as e:
+            logger.error(f"FB API rejected request for '{keyword}': {e}")
+            logger.error(
+                "If you see 'Invalid OAuth' → your token expired. "
+                "If you see 'identity' or 'verification' → visit "
+                "https://www.facebook.com/ads/library/api/ and complete verification."
+            )
         except Exception as e:
             logger.error(f"Error fetching ads for '{keyword}': {e}")
 

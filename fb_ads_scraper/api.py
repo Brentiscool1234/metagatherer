@@ -15,10 +15,9 @@ logger = logging.getLogger(__name__)
 FB_API_VERSION = "v19.0"
 BASE_URL = f"https://graph.facebook.com/{FB_API_VERSION}"
 
-# Fields to request from ads_archive.
-# NOTE: impressions, spend, bylines require Meta Research API access
-# (restricted to approved researchers). Removed to avoid 400 errors for
-# standard developer tokens.
+# Core fields available to any standard developer token.
+# Restricted fields (impressions, spend, bylines, estimated_audience_size)
+# require Meta Research API approval and are excluded here.
 ADS_FIELDS = ",".join([
     "id",
     "ad_creation_time",
@@ -34,10 +33,17 @@ ADS_FIELDS = ",".join([
     "publisher_platforms",
     "media_type",
     "languages",
-    "currency",
 ])
 
 PAGE_FIELDS = "fan_count,name,website,category,link"
+
+
+class FBApiError(Exception):
+    """Raised when the FB API returns a non-retryable error."""
+    def __init__(self, code, error_type, message):
+        self.code = code
+        self.error_type = error_type
+        super().__init__(f"FB API {code} ({error_type}): {message}")
 
 
 class RateLimitError(Exception):
@@ -53,54 +59,78 @@ class FBApiClient:
         self._session.headers.update({"User-Agent": "MetaGatherer/1.0"})
 
     def _request(self, url: str, params: dict = None) -> dict:
-        """Make a GET request with exponential backoff on rate limit or transient errors."""
-        params = dict(params or {})  # never mutate caller's dict
-        # Don't add token again if it's already embedded in a pagination next-URL
+        """Make a GET request with exponential backoff on rate limits / 5xx errors.
+
+        400 errors are NOT retried — they indicate a bad request and FB's
+        error message is extracted and raised immediately so it's visible.
+        """
+        params = dict(params or {})
+        # Don't re-add token when following a self-contained pagination next-URL
         if "access_token" not in url:
             params["access_token"] = self.access_token
+
         delay = 2
         for attempt in range(self.max_retries + 1):
             try:
                 resp = self._session.get(url, params=params, timeout=30)
 
-                # Try to parse FB's error body before raising on status
                 if not resp.ok:
+                    # Always extract FB's actual error body
+                    fb_code, fb_type, fb_msg = "?", "?", resp.text[:200]
                     try:
                         err_body = resp.json()
                         fb_err = err_body.get("error", {})
-                        fb_msg = f"FB {fb_err.get('code','?')} ({fb_err.get('type','?')}): {fb_err.get('message','')}"
+                        fb_code = fb_err.get("code", "?")
+                        fb_type = fb_err.get("type", "?")
+                        fb_msg = fb_err.get("message", resp.text[:200])
+                        fb_sub = fb_err.get("error_subcode", "")
+                        if fb_sub:
+                            fb_msg += f" (subcode {fb_sub})"
                     except Exception:
-                        fb_msg = resp.text[:300]
+                        pass
 
-                    is_rate_limit = resp.status_code == 429 or "User request limit reached" in resp.text
+                    is_rate_limit = (
+                        resp.status_code == 429
+                        or "User request limit reached" in resp.text
+                        or fb_code in (4, 17, 32, 613)
+                    )
                     is_transient = resp.status_code in (500, 502, 503, 504)
 
                     if (is_rate_limit or is_transient) and attempt < self.max_retries:
-                        logger.warning(f"Transient error ({resp.status_code}). Retrying in {delay}s... [{fb_msg}]")
+                        logger.warning(
+                            f"Transient/rate-limit error ({resp.status_code}). "
+                            f"Retrying in {delay}s... | {fb_code} {fb_type}: {fb_msg}"
+                        )
                         time.sleep(delay)
                         delay *= 2
                         continue
 
-                    resp.raise_for_status()
+                    # Non-retryable — raise with FB's message clearly visible
+                    raise FBApiError(fb_code, fb_type, fb_msg)
 
                 data = resp.json()
                 if "error" in data:
                     err = data["error"]
-                    # Transient FB errors worth retrying
-                    if err.get("code") in (1, 2, 4, 17, 341) and attempt < self.max_retries:
+                    code = err.get("code")
+                    # Transient FB errors (temporary service issues)
+                    if code in (1, 2, 341) and attempt < self.max_retries:
                         logger.warning(
-                            f"FB API error (code {err.get('code')}): {err.get('message')}. "
+                            f"Transient FB error ({code}): {err.get('message')}. "
                             f"Retrying in {delay}s..."
                         )
                         time.sleep(delay)
                         delay *= 2
                         continue
-                    raise ValueError(f"FB API error {err.get('code')} ({err.get('type')}): {err.get('message')}")
+                    raise FBApiError(code, err.get("type", "?"), err.get("message", ""))
+
                 return data
+
+            except FBApiError:
+                raise  # never swallow these
             except requests.RequestException as e:
                 if attempt == self.max_retries:
                     raise
-                logger.warning(f"Request failed: {e}. Retrying in {delay}s...")
+                logger.warning(f"Network error: {e}. Retrying in {delay}s...")
                 time.sleep(delay)
                 delay *= 2
 
@@ -110,26 +140,25 @@ class FBApiClient:
         countries: list[str],
         active_status: str = "ACTIVE",
         media_type: Optional[str] = None,
-        limit: int = 500,
+        limit: int = 100,
         max_pages: int = 5,
     ) -> list[dict]:
         """
-        Search the Ads Library and return all ads (paginated).
+        Search the Ads Library and return ads (paginated).
 
         Args:
             search_terms: Keywords to search for.
             countries: List of 2-letter country codes, e.g. ["US"].
             active_status: "ACTIVE", "INACTIVE", or "ALL".
-            media_type: Optional filter — "VIDEO", "IMAGE", "NONE", "MEME", "CAROUSEL".
-            limit: Results per page (max 500).
+            media_type: Optional filter — "VIDEO", "IMAGE", "MEME", "CAROUSEL".
+            limit: Results per page (max 500 per FB docs, but 100 is safer).
             max_pages: Cap on how many API pages to fetch per keyword.
         """
-        # ad_reached_countries must be a JSON-encoded array string, e.g. '["US"]'
+        # ad_reached_countries must be a JSON array string: '["US"]'
         params = {
             "search_terms": search_terms,
             "ad_reached_countries": json.dumps(list(countries)),
             "ad_active_status": active_status,
-            "ad_type": "ALL",
             "fields": ADS_FIELDS,
             "limit": limit,
         }
@@ -141,8 +170,6 @@ class FBApiClient:
         page_num = 0
 
         while url and page_num < max_pages:
-            # For page 0 pass full params; for subsequent pages the next-URL
-            # is self-contained (cursor + token already embedded), so pass {}.
             data = self._request(url, params if page_num == 0 else {})
             ads.extend(data.get("data", []))
             page_num += 1
@@ -157,7 +184,7 @@ class FBApiClient:
         return ads
 
     def get_page_info(self, page_id: str) -> dict:
-        """Return page info (fan_count, website, etc.) with in-memory caching."""
+        """Return page info with in-memory caching."""
         if page_id in self._page_cache:
             return self._page_cache[page_id]
 
