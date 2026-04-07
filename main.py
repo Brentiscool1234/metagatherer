@@ -65,17 +65,24 @@ def _setup_logging(verbose: bool):
 @click.option("--output", "-o", default=None,
               help="CSV output path. Auto-named with timestamp if omitted.")
 @click.option("--no-csv", is_flag=True, default=False, help="Skip CSV export.")
+@click.option("--state-file", default="scraper_state.json", show_default=True,
+              help="Path to the persistent state file for resuming interrupted runs.")
+@click.option("--reset", is_flag=True, default=False,
+              help="Ignore saved state and start a fresh scan from scratch.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
 def main(
     countries, days, min_ads, min_followers, max_followers,
     keywords, max_keywords, keyword_depth, max_ads_per_keyword,
-    video_only, require_shop_now, headless, output, no_csv, verbose,
+    video_only, require_shop_now, headless, output, no_csv,
+    state_file, reset, verbose,
 ):
     """MetaGatherer: Find winning ecommerce products in the Facebook Ads Library."""
     _setup_logging(verbose)
 
     from fb_ads_scraper.scraper import FBAdsScraper
     from fb_ads_scraper.output import print_summary_banner, print_results_table, export_csv
+    from fb_ads_scraper.state import load_state, state_summary, DEFAULT_STATE_FILE
+    import os
 
     console.rule("[bold cyan]MetaGatherer — FB Ads Library Scanner[/bold cyan]")
     console.print(
@@ -91,6 +98,22 @@ def main(
         f"Headless: [bold]{headless}[/bold]"
     )
     console.rule()
+
+    # Show resume / reset status
+    if reset:
+        console.print("[yellow]--reset flag set — ignoring any saved state, starting fresh.[/yellow]\n")
+    elif os.path.exists(state_file):
+        saved = load_state(state_file)
+        if saved:
+            console.print(
+                f"[green]Resuming saved state[/green] ({state_file}): "
+                f"[bold]{state_summary(saved)}[/bold]\n"
+                f"[dim]Use --reset to start over.[/dim]\n"
+            )
+        else:
+            console.print(f"[dim]No usable state in {state_file} — starting fresh.[/dim]\n")
+    else:
+        console.print(f"[dim]No saved state found — starting fresh.[/dim]\n")
 
     if not headless:
         console.print(
@@ -110,6 +133,8 @@ def main(
         max_keywords=max_keywords,
         max_ads_per_keyword=max_ads_per_keyword,
         headless=headless,
+        state_file=state_file,
+        reset=reset,
     )
 
     winners = scraper.run(extra_keywords=list(keywords) if keywords else None)

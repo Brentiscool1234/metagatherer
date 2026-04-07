@@ -19,6 +19,7 @@ from .browser import AdsLibraryBrowser, parse_follower_count, parse_date_text
 from .analysis import cluster_page_ads, extract_new_keywords, has_shop_now_cta
 from .ai_keywords import expand_keywords_with_ai
 from .shopify import is_shopify_store
+from .state import save_state, load_state, state_summary, DEFAULT_STATE_FILE
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +121,8 @@ class FBAdsScraper:
         max_ads_per_keyword: int = 120,
         headless: bool = False,
         use_ai: bool = True,
+        state_file: str = DEFAULT_STATE_FILE,
+        reset: bool = False,
     ):
         self.countries = countries or ["US"]
         self.days = days
@@ -133,12 +136,38 @@ class FBAdsScraper:
         self.max_ads_per_keyword = max_ads_per_keyword
         self.headless = headless
         self.use_ai = use_ai
+        self.state_file = state_file
 
         self._page_ads: dict[str, list[dict]] = defaultdict(list)
         self._page_keywords: dict[str, set[str]] = defaultdict(set)
         self._page_followers: dict[str, int] = {}
         self._seen_keys: set[str] = set()
         self._searched_keywords: set[str] = set()
+
+        # Load previous run's state unless reset was requested
+        self._resume_queue: list[tuple[str, int]] = []
+        if not reset:
+            saved = load_state(state_file)
+            if saved:
+                self._page_ads = saved["page_ads"]
+                self._page_keywords = saved["page_keywords"]
+                self._page_followers = saved["page_followers"]
+                self._seen_keys = saved["seen_keys"]
+                self._searched_keywords = saved["searched_keywords"]
+                self._resume_queue = saved["queue"]
+                logger.info(
+                    f"Resuming saved state — {state_summary(saved)}"
+                )
+
+    def _snapshot_state(self, queue: deque) -> dict:
+        return {
+            "searched_keywords": self._searched_keywords,
+            "queue": list(queue),
+            "page_ads": self._page_ads,
+            "page_keywords": self._page_keywords,
+            "page_followers": self._page_followers,
+            "seen_keys": self._seen_keys,
+        }
 
     def run(self, extra_keywords: list[str] = None) -> list[WinningProduct]:
         seeds = list(SEED_KEYWORDS)
@@ -151,10 +180,21 @@ class FBAdsScraper:
         try:
             # ── Phase 1: Keyword sweep ────────────────────────────────────
             logger.info("Phase 1: Keyword sweep")
-            queue: deque[tuple[str, int]] = deque((kw, 0) for kw in seeds)
-            total = 0
-            all_bodies_for_ai: list[str] = []
 
+            # Resume from saved queue if available, otherwise start from seeds.
+            # Any extra_keywords not yet searched are prepended.
+            if self._resume_queue:
+                queue: deque[tuple[str, int]] = deque(self._resume_queue)
+                # Add any extra_keywords not already searched
+                for kw in reversed(list(extra_keywords or [])):
+                    if kw not in self._searched_keywords:
+                        queue.appendleft((kw, 0))
+                logger.info(f"  Resuming with {len(queue)} keyword(s) in queue.")
+            else:
+                queue = deque((kw, 0) for kw in seeds)
+
+            total = len(self._searched_keywords)
+            all_bodies_for_ai: list[str] = []
             all_page_names_for_ai: list[str] = []
 
             while queue and total < self.max_keywords:
@@ -199,6 +239,7 @@ class FBAdsScraper:
                             if kw not in self._searched_keywords:
                                 queue.append((kw, depth + 1))
                         if ai_kws:
+                            save_state(self.state_file, self._snapshot_state(queue))
                             continue  # skip frequency-based if AI gave us something
 
                     # Frequency-based fallback
@@ -206,6 +247,9 @@ class FBAdsScraper:
                     for kw in freq_kws:
                         if kw not in self._searched_keywords:
                             queue.append((kw, depth + 1))
+
+                # Save after every keyword so interruptions are resumable
+                save_state(self.state_file, self._snapshot_state(queue))
 
             logger.info(
                 f"Phase 1 done: {len(self._page_ads)} pages, "
