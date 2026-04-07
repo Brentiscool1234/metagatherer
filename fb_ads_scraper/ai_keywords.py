@@ -33,7 +33,10 @@ def keywords_for_niche(niche: str, count: int = 10) -> list[str]:
 
     api_key = os.getenv("ANTHROPIC_API_KEY")
     if not api_key:
-        logger.debug("No ANTHROPIC_API_KEY — can't generate niche keywords")
+        logger.warning(
+            "ANTHROPIC_API_KEY not set — AI niche keywords unavailable. "
+            "Add ANTHROPIC_API_KEY=sk-... to your .env file to enable this."
+        )
         return []
 
     prompt = f"""You are a dropshipping product researcher. A user wants to find winning products in this niche:

@@ -42,14 +42,78 @@ SEED_KEYWORDS = [
     "buy now",
     "shop now",
     "order now",
-    "free shipping",
-    "limited time offer",
-    "get yours today",
-    "flash sale",
+    "get yours",
+    "50% off",
+    "as seen on",
     "ships worldwide",
     "add to cart",
-    "exclusive deal",
+    "while supplies last",
+    "grab yours",
 ]
+
+# Hardcoded niche → seed keywords used when AI is unavailable
+NICHE_SEED_MAP: dict[str, list[str]] = {
+    "pet": [
+        "cat water fountain", "dog anxiety vest", "automatic pet feeder",
+        "dog harness no pull", "cat litter mat", "pet hair remover",
+        "dog calming treats", "retractable dog leash", "pet nail grinder",
+        "cat scratcher lounge",
+    ],
+    "fitness": [
+        "resistance bands set", "ab roller wheel", "posture corrector",
+        "knee compression sleeve", "jump rope speed", "pull up bar",
+        "massage gun deep tissue", "yoga mat thick", "ankle weights",
+        "foam roller muscle",
+    ],
+    "kitchen": [
+        "vegetable chopper", "garlic press rocker", "mandoline slicer",
+        "avocado slicer", "egg poacher pan", "spiralizer vegetable",
+        "knife sharpener electric", "salad spinner", "rice cooker mini",
+        "air fryer rack",
+    ],
+    "beauty": [
+        "led face mask therapy", "hair growth serum", "jade roller gua sha",
+        "lash serum growth", "vitamin c serum face", "derma roller face",
+        "blackhead remover vacuum", "eyebrow stamp kit", "lip plumper device",
+        "scalp massager shampoo",
+    ],
+    "home": [
+        "led strip lights", "galaxy projector star", "weighted blanket",
+        "humidifier ultrasonic", "oil diffuser essential", "shower head filter",
+        "door draft stopper", "cable management box", "shower caddy tension",
+        "blackout curtains thermal",
+    ],
+    "tech": [
+        "wireless charger pad", "phone holder car mount", "ring light selfie",
+        "bluetooth tracker wallet", "laptop stand adjustable", "desk organizer",
+        "cable organizer clips", "screen cleaner kit", "keyboard wrist rest",
+        "webcam cover privacy",
+    ],
+    "jewelry": [
+        "layered necklace set", "minimalist ring gold", "huggie hoop earrings",
+        "initial necklace pendant", "birthstone bracelet", "anklet set gold",
+        "crystal hair claw", "statement earrings", "pearl necklace set",
+        "charm bracelet women",
+    ],
+    "baby": [
+        "baby monitor camera", "diaper bag backpack", "baby carrier wrap",
+        "teething toys silicone", "white noise machine baby", "baby nail file",
+        "nursing pillow breastfeeding", "baby food maker", "stroller organizer",
+        "bath thermometer baby",
+    ],
+    "outdoor": [
+        "portable solar charger", "camping hammock lightweight", "hiking backpack",
+        "water filter straw", "led headlamp rechargeable", "folding camp chair",
+        "paracord bracelet survival", "insulated water bottle", "bug repellent wristband",
+        "emergency blanket mylar",
+    ],
+    "car": [
+        "car phone mount magnetic", "dash cam front rear", "seat gap organizer",
+        "trunk organizer collapsible", "car air freshener vent", "steering wheel cover",
+        "car vacuum cordless", "windshield sun shade", "blind spot mirror",
+        "tire pressure gauge digital",
+    ],
+}
 
 # Pages seen this many times in Phase 1 get a full verification visit
 PAGE_VISIT_THRESHOLD = 2
@@ -190,17 +254,33 @@ class FBAdsScraper:
         # If a niche was given, let AI generate targeted seed keywords for it.
         # These replace the generic seeds (buy now / shop now / etc.) so the
         # BFS starts inside the niche right away.
-        if self.niche and self.use_ai:
-            niche_kws = keywords_for_niche(self.niche, count=10)
+        if self.niche:
+            if self.use_ai:
+                niche_kws = keywords_for_niche(self.niche, count=10)
+            else:
+                niche_kws = []
+
             if niche_kws:
                 logger.info(f"Niche '{self.niche}' → AI seeds: {niche_kws}")
                 seeds = niche_kws
             else:
-                logger.warning(
-                    f"AI couldn't generate keywords for niche '{self.niche}' "
-                    f"— falling back to generic seeds."
+                # Try hardcoded niche map before falling back to generic seeds
+                niche_lower = self.niche.lower()
+                seeds = next(
+                    (kws for key, kws in NICHE_SEED_MAP.items() if key in niche_lower),
+                    None,
                 )
-                seeds = list(SEED_KEYWORDS)
+                if seeds:
+                    logger.info(
+                        f"Niche '{self.niche}' → using built-in seed keywords "
+                        f"(set ANTHROPIC_API_KEY for AI-generated seeds)"
+                    )
+                else:
+                    logger.warning(
+                        f"No built-in seeds for niche '{self.niche}' and AI unavailable "
+                        f"— using generic seeds. Set ANTHROPIC_API_KEY for better results."
+                    )
+                    seeds = list(SEED_KEYWORDS)
         else:
             seeds = list(SEED_KEYWORDS)
 

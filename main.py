@@ -17,12 +17,17 @@ Examples:
 """
 
 import logging
+import os
 import sys
 from datetime import datetime
 
 import click
+from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
+
+# Load .env before anything else so ANTHROPIC_API_KEY is available
+load_dotenv()
 
 console = Console()
 
