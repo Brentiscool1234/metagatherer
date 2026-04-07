@@ -1,15 +1,13 @@
 """
 Core scraping orchestration — Selenium browser-based, no API key required.
 
-BFS keyword expansion:
-  Seed keywords → scrape public Ads Library → extract new keywords → repeat.
+Two-phase approach:
+  Phase 1 — Keyword sweep: search 30 keywords, collect ads, track pages
+  Phase 2 — Page verification: visit each promising page's own Ads Library
+             view to count ALL their active ads (fixes the 12+ threshold)
 
-Filtering:
-  - Page follower count: 10–2000 (scraped from ad cards)
-  - Product clustering: group ads from same page by keyword overlap
-  - Winning threshold: >= min_ads ads in cluster within `days`-day window
-  - Shop Now CTA detection
-  - Shopify store verification
+AI keyword expansion uses Claude (ANTHROPIC_API_KEY in .env) to suggest
+specific product search terms instead of generic frequency-mined words.
 """
 
 import logging
@@ -18,7 +16,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 from .browser import AdsLibraryBrowser, parse_follower_count, parse_date_text
-from .analysis import cluster_page_ads, extract_new_keywords, has_shop_now_cta, extract_keywords
+from .analysis import cluster_page_ads, extract_new_keywords, has_shop_now_cta
+from .ai_keywords import expand_keywords_with_ai
 from .shopify import is_shopify_store
 
 logger = logging.getLogger(__name__)
@@ -36,11 +35,16 @@ SEED_KEYWORDS = [
     "exclusive deal",
 ]
 
+# Pages seen this many times in Phase 1 get a full verification visit
+PAGE_VISIT_THRESHOLD = 2
+
 
 def _to_standard_ad(raw: dict, keyword: str) -> dict:
-    """Convert a browser-scraped ad dict to the schema analysis.py expects."""
     page_url = raw.get("page_url", "")
-    page_id = page_url.split("facebook.com/")[-1].split("?")[0].strip("/") if page_url else "unknown"
+    page_id = (
+        page_url.split("facebook.com/")[-1].split("?")[0].strip("/")
+        if page_url else "unknown"
+    )
     return {
         "id": raw.get("_key", ""),
         "page_id": page_id,
@@ -58,13 +62,15 @@ def _to_standard_ad(raw: dict, keyword: str) -> dict:
         "_has_shop_now": raw.get("has_shop_now", False),
         "_start_date": parse_date_text(raw.get("date_text", "")),
         "_keyword": keyword,
+        # "N ads use this creative and text" — actual running ad count per card
+        "_ad_versions": max(1, int(raw.get("ad_versions", 1) or 1)),
     }
 
 
 def _within_days(ad: dict, days: int) -> bool:
     start = ad.get("_start_date")
     if not start:
-        return True  # no date = assume active/recent
+        return True
     try:
         dt = datetime.strptime(start, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         return dt >= datetime.now(timezone.utc) - timedelta(days=days)
@@ -113,6 +119,7 @@ class FBAdsScraper:
         max_keywords: int = 30,
         max_ads_per_keyword: int = 120,
         headless: bool = False,
+        use_ai: bool = True,
     ):
         self.countries = countries or ["US"]
         self.days = days
@@ -125,6 +132,7 @@ class FBAdsScraper:
         self.max_keywords = max_keywords
         self.max_ads_per_keyword = max_ads_per_keyword
         self.headless = headless
+        self.use_ai = use_ai
 
         self._page_ads: dict[str, list[dict]] = defaultdict(list)
         self._page_keywords: dict[str, set[str]] = defaultdict(set)
@@ -140,8 +148,11 @@ class FBAdsScraper:
         browser.start()
 
         try:
+            # ── Phase 1: Keyword sweep ────────────────────────────────────
+            logger.info("Phase 1: Keyword sweep")
             queue: deque[tuple[str, int]] = deque((kw, 0) for kw in seeds)
             total = 0
+            all_bodies_for_ai: list[str] = []
 
             while queue and total < self.max_keywords:
                 keyword, depth = queue.popleft()
@@ -150,8 +161,7 @@ class FBAdsScraper:
                 self._searched_keywords.add(keyword)
                 total += 1
 
-                logger.info(f"[depth={depth}] Searching: '{keyword}' ({total}/{self.max_keywords})")
-
+                logger.info(f"[{depth}] '{keyword}' ({total}/{self.max_keywords})")
                 raw_ads = browser.search_keyword(keyword, max_ads=self.max_ads_per_keyword)
                 new_ads = []
 
@@ -166,19 +176,75 @@ class FBAdsScraper:
                         self._page_ads[page_id].append(ad)
                         self._page_keywords[page_id].add(keyword)
                         new_ads.append(ad)
+                        body = raw.get("ad_body", "")
+                        if body:
+                            all_bodies_for_ai.append(body)
 
-                # BFS keyword expansion
                 if depth < self.max_keyword_depth and new_ads:
-                    new_kws = extract_new_keywords(new_ads, self._searched_keywords, max_new=6)
-                    for kw in new_kws:
+                    # Try AI expansion first, fall back to frequency-based
+                    if self.use_ai and all_bodies_for_ai:
+                        ai_kws = expand_keywords_with_ai(
+                            all_bodies_for_ai[-60:],  # recent bodies
+                            self._searched_keywords,
+                            max_new=8,
+                        )
+                        for kw in ai_kws:
+                            if kw not in self._searched_keywords:
+                                queue.append((kw, depth + 1))
+                        if ai_kws:
+                            continue  # skip frequency-based if AI gave us something
+
+                    # Frequency-based fallback
+                    freq_kws = extract_new_keywords(new_ads, self._searched_keywords, max_new=6)
+                    for kw in freq_kws:
                         if kw not in self._searched_keywords:
                             queue.append((kw, depth + 1))
-                            logger.debug(f"  → queued: '{kw}'")
 
             logger.info(
-                f"Collection done. {len(self._page_ads)} pages, "
-                f"{len(self._seen_keys)} unique ads."
+                f"Phase 1 done: {len(self._page_ads)} pages, "
+                f"{len(self._seen_keys)} ads collected."
             )
+
+            # ── Phase 2: Page verification ────────────────────────────────
+            # Pages worth a direct visit: total ad versions >= threshold
+            # ("3 ads use this creative" counts as 3, not 1)
+            def _total_versions(ads):
+                return sum(a.get("_ad_versions", 1) for a in ads)
+
+            promising = {
+                pid: ads for pid, ads in self._page_ads.items()
+                if _total_versions(ads) >= PAGE_VISIT_THRESHOLD
+            }
+            logger.info(
+                f"Phase 2: Verifying {len(promising)} pages "
+                f"(seen {PAGE_VISIT_THRESHOLD}+ times) for full ad counts..."
+            )
+
+            for pid, existing_ads in promising.items():
+                fan_count = self._avg_followers(existing_ads)
+                # Skip pages obviously outside follower range
+                if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
+                    continue
+
+                page_ads = browser.get_page_ads(pid, max_ads=200)
+                if not page_ads:
+                    continue
+
+                added = 0
+                for raw in page_ads:
+                    key = raw.get("_key", "")
+                    if not key or key in self._seen_keys:
+                        continue
+                    self._seen_keys.add(key)
+                    ad = _to_standard_ad(raw, "page_visit")
+                    self._page_ads[pid].append(ad)
+                    added += 1
+
+                total_now = len(self._page_ads[pid])
+                logger.info(
+                    f"  {pid}: {total_now} total ads "
+                    f"({added} new from page visit)"
+                )
 
         except KeyboardInterrupt:
             logger.warning("Interrupted — evaluating partial results...")
@@ -187,42 +253,55 @@ class FBAdsScraper:
 
         return self._evaluate_pages()
 
+    def _avg_followers(self, ads: list[dict]) -> int:
+        counts = [a["_follower_count"] for a in ads if a.get("_follower_count", 0) > 0]
+        return int(sum(counts) / len(counts)) if counts else 0
+
     def _evaluate_pages(self) -> list[WinningProduct]:
         winners = []
         total = len(self._page_ads)
 
         for idx, (page_id, ads) in enumerate(self._page_ads.items(), 1):
-            logger.info(f"Evaluating {idx}/{total}: {page_id} ({len(ads)} ads)")
-
-            counts = [a["_follower_count"] for a in ads if a.get("_follower_count", 0) > 0]
-            fan_count = int(sum(counts) / len(counts)) if counts else 0
+            fan_count = self._avg_followers(ads)
 
             if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
-                logger.debug(f"  Skip: {fan_count} followers out of range")
                 continue
 
             recent = [a for a in ads if _within_days(a, self.days)]
             if not recent:
-                logger.debug(f"  Skip: no ads within {self.days}d")
                 continue
 
             for cluster in cluster_page_ads(recent):
-                if len(cluster) < self.min_ads:
+                # Sum "N ads use this creative" across all cards in the cluster
+                total_versions = sum(a.get("_ad_versions", 1) for a in cluster)
+                if total_versions < self.min_ads:
                     continue
 
-                shop_now = sum(1 for a in cluster if a.get("_has_shop_now") or has_shop_now_cta(a))
+                shop_now = sum(
+                    1 for a in cluster
+                    if a.get("_has_shop_now") or has_shop_now_cta(a)
+                )
                 if self.require_shop_now and shop_now == 0:
                     continue
 
-                is_video = any((a.get("media_type") or "").upper() == "VIDEO" for a in cluster)
+                is_video = any(
+                    (a.get("media_type") or "").upper() == "VIDEO"
+                    for a in cluster
+                )
 
-                page_url = next((a["page_url"] for a in cluster if a.get("page_url")), "")
-                is_shopify, shopify_reason = (False, "no url")
+                page_url = next(
+                    (a["page_url"] for a in cluster if a.get("page_url")), ""
+                )
+                is_shopify, shopify_reason = False, "no url"
                 if page_url:
                     is_shopify, shopify_reason = is_shopify_store(page_url)
 
-                start_dates = sorted({a["_start_date"] for a in cluster if a.get("_start_date")})
-                platforms = sorted({p for a in cluster for p in (a.get("publisher_platforms") or [])})
+                start_dates = sorted(
+                    {a["_start_date"] for a in cluster if a.get("_start_date")}
+                )
+                platforms = sorted(
+                    {p for a in cluster for p in (a.get("publisher_platforms") or [])}
+                )
                 sample = cluster[0]
                 bodies = sample.get("ad_creative_bodies") or []
                 page_name = sample.get("page_name", page_id)
@@ -232,7 +311,7 @@ class FBAdsScraper:
                     page_name=page_name,
                     page_followers=fan_count,
                     page_url=page_url,
-                    ad_count=len(cluster),
+                    ad_count=total_versions,  # sum of "N ads use this creative"
                     total_page_ads=len(ads),
                     has_shop_now=shop_now > 0,
                     is_shopify=is_shopify,
@@ -242,7 +321,9 @@ class FBAdsScraper:
                     sample_ad_body=(bodies[0][:300] if bodies else ""),
                     sample_snapshot_url=sample.get("ad_snapshot_url", ""),
                     publisher_platforms=platforms,
-                    keywords_matched=sorted(self._page_keywords.get(page_id, set())),
+                    keywords_matched=sorted(
+                        self._page_keywords.get(page_id, set())
+                    ),
                 )
                 winners.append(w)
                 logger.info(

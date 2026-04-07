@@ -183,6 +183,11 @@ try {
             }
         });
 
+        /* "N ads use this creative and text" — the real ad count signal */
+        var adVersions = 1;
+        var versionMatch = fullText.match(/(\d+)\s+ads?\s+use\s+this/i);
+        if (versionMatch) adVersions = parseInt(versionMatch[1], 10) || 1;
+
         var key = (link.href || '') + '|' + adBody.slice(0, 50);
 
         results.push({
@@ -195,7 +200,8 @@ try {
             cta_button:    clean(ctaButton),
             date_text:     clean(dateText),
             snapshot_url:  clean(snapshotUrl),
-            ad_body:       clean(adBody)
+            ad_body:       clean(adBody),
+            ad_versions:   adVersions
         });
     });
 } catch(e) {
@@ -280,8 +286,10 @@ class AdsLibraryBrowser:
                 try:
                     raw = self._driver.execute_script(_EXTRACT_JS) or []
                 except WebDriverException as js_err:
-                    logger.warning(f"  JS error on scroll {scroll_n}: {js_err.msg[:120]}")
-                    break
+                    logger.debug(f"  JS error on scroll {scroll_n} (skipping): {str(js_err)[:80]}")
+                    self._driver.execute_script("window.scrollBy(0, window.innerHeight * 2.5);")
+                    time.sleep(SCROLL_DELAY)
+                    continue
 
                 # Check for JS-level errors
                 for item in raw:
@@ -316,6 +324,71 @@ class AdsLibraryBrowser:
             logger.warning(f"  Browser error scraping '{keyword}': {e.msg[:200] if hasattr(e,'msg') else str(e)[:200]}")
 
         logger.info(f"  Scraped {len(all_ads)} ads for '{keyword}'")
+        return all_ads
+
+    def get_page_ads(self, page_id: str, max_ads: int = 200) -> list[dict]:
+        """
+        Visit a page's own Ads Library view and collect all its active ads.
+        Uses numeric page IDs (view_all_page_id) or slug-based search.
+        """
+        country = self.countries[0] if self.countries else "US"
+        if page_id.isdigit():
+            url = ADS_LIBRARY_BASE + "?" + urlencode({
+                "active_status": "active",
+                "ad_type": "all",
+                "country": country,
+                "search_type": "page",
+                "view_all_page_id": page_id,
+            })
+        else:
+            url = ADS_LIBRARY_BASE + "?" + urlencode({
+                "active_status": "active",
+                "ad_type": "all",
+                "country": country,
+                "q": page_id,
+                "search_type": "page",
+            })
+
+        all_ads: list[dict] = []
+        seen_keys: set[str] = set()
+
+        try:
+            self._driver.get(url)
+            time.sleep(4)
+
+            no_new = 0
+            for _ in range(15):
+                try:
+                    raw = self._driver.execute_script(_EXTRACT_JS) or []
+                except WebDriverException:
+                    raw = []
+
+                added = 0
+                for ad in raw:
+                    if "_error" in ad:
+                        continue
+                    k = ad.get("_key", "")
+                    if k and k not in seen_keys:
+                        seen_keys.add(k)
+                        all_ads.append(ad)
+                        added += 1
+
+                if added == 0:
+                    no_new += 1
+                    if no_new >= 3:
+                        break
+                else:
+                    no_new = 0
+
+                if len(all_ads) >= max_ads:
+                    break
+
+                self._driver.execute_script("window.scrollBy(0, window.innerHeight * 2.5);")
+                time.sleep(2.0)
+
+        except WebDriverException as e:
+            logger.debug(f"  get_page_ads error for {page_id}: {str(e)[:100]}")
+
         return all_ads
 
     def _dismiss_dialogs(self):

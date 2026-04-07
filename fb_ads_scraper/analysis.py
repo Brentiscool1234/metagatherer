@@ -13,24 +13,54 @@ from collections import Counter, defaultdict
 from datetime import datetime, timezone, timedelta
 from typing import Optional
 
-# Common English stop-words to ignore when extracting product keywords
+# Comprehensive stop-words — anything too generic to be a useful product keyword
 _STOP_WORDS = {
+    # Articles / conjunctions / prepositions
     "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
     "of", "with", "by", "from", "up", "about", "as", "into", "through",
+    "between", "during", "before", "after", "above", "below", "since",
+    # Common verbs
     "is", "are", "was", "were", "be", "been", "being", "have", "has",
     "had", "do", "does", "did", "will", "would", "could", "should",
-    "may", "might", "shall", "can", "need", "dare", "ought", "used",
+    "may", "might", "shall", "can", "need", "get", "got", "getting",
+    "make", "made", "makes", "making", "take", "takes", "taken",
+    "come", "comes", "came", "coming", "go", "goes", "went", "going",
+    "know", "knew", "known", "think", "thought", "look", "see", "feel",
+    "want", "want", "wanted", "try", "tried", "find", "keep", "let",
+    "put", "set", "run", "help", "show", "move", "play", "turn", "start",
+    # Pronouns
     "this", "that", "these", "those", "i", "you", "he", "she", "we",
     "they", "it", "me", "him", "her", "us", "them", "my", "your", "his",
-    "our", "their", "its", "get", "our", "your", "now", "shop", "buy",
-    "off", "free", "new", "best", "sale", "today", "here", "click",
-    "link", "bio", "use", "code", "save", "more", "all", "just", "like",
-    "only", "also", "so", "if", "not", "no", "yes", "www", "http",
-    "https", "com", "co", "uk", "us", "eu", "de", "fr", "limited",
-    "offer", "deal", "discount", "shipping", "order", "add", "cart",
-    "check", "out", "what", "how", "why", "when", "where", "who",
-    "which", "than", "then", "time", "day", "days", "week", "weeks",
-    "month", "months", "year", "years", "up", "over", "back", "per",
+    "our", "their", "its", "what", "which", "who", "whom", "whose",
+    # Generic adjectives / adverbs (all useless as search terms)
+    "good", "great", "best", "better", "bad", "new", "old", "big", "small",
+    "large", "little", "high", "low", "long", "short", "right", "left",
+    "real", "sure", "true", "false", "own", "same", "different", "other",
+    "every", "each", "both", "few", "more", "most", "much", "many",
+    "only", "just", "even", "also", "still", "well", "back", "way",
+    "here", "there", "then", "now", "very", "too", "quite", "really",
+    "never", "always", "often", "already", "again", "once", "ever",
+    "however", "though", "although", "because", "while", "when", "where",
+    "how", "why", "than", "so", "if", "not", "no", "yes", "any", "all",
+    "first", "last", "next", "second", "third", "early", "late",
+    # Ecommerce / marketing noise (not product keywords)
+    "buy", "shop", "order", "off", "free", "sale", "today", "click",
+    "link", "bio", "use", "code", "save", "check", "out", "offer",
+    "deal", "discount", "shipping", "cart", "add", "limited", "time",
+    "exclusive", "now", "only", "special", "promo", "percent", "price",
+    "cost", "paid", "pay", "money", "cash", "value", "worth", "cheap",
+    "fast", "quick", "easy", "simple", "perfect", "amazing", "awesome",
+    "incredible", "love", "loved", "loving", "like", "liked", "enjoy",
+    "works", "work", "working", "worked", "made", "days", "weeks",
+    "months", "years", "day", "week", "month", "year", "per", "over",
+    "people", "person", "men", "women", "man", "woman", "kids", "family",
+    "life", "world", "home", "house", "place", "things", "thing",
+    "learn", "style", "yourself", "yourself", "reviews", "review",
+    # Web / tech noise
+    "www", "http", "https", "com", "co", "uk", "eu", "org", "net",
+    "facebook", "instagram", "tiktok", "youtube", "twitter",
+    # Single letters and very short strings (handled by min_len but listed anyway)
+    "i", "a",
 }
 
 # These signal ecommerce intent; used as seed keyword boosters
