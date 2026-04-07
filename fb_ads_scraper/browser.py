@@ -370,9 +370,9 @@ class AdsLibraryBrowser:
             # The dedicated page view shows "X followers" or "X people like this"
             # in the header above the ad results.
             try:
-                follower_text = self._driver.execute_script("""
+                follower_text = self._driver.execute_script(r"""
                     var t = document.body.innerText || '';
-                    var m = t.match(/([\d][\d,\\.]*\\s*[KkMm]?)\\s*(people like this|followers?|likes?)/i);
+                    var m = t.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i);
                     return m ? m[0] : '';
                 """) or ""
                 if follower_text:
