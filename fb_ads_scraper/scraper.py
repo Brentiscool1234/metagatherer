@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Pages/ads from these platforms are supplier marketplaces, not dropshipping stores
 _PLATFORM_BLOCKLIST = {
-    "alibaba", "aliexpress", "temu", "1688", "dhgate", "shein",
+    "alibaba", "aliexpress", "temu", "amazon", "1688", "dhgate", "shein",
     "wish.com", "banggood",
 }
 
