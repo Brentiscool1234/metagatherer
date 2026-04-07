@@ -326,10 +326,11 @@ class AdsLibraryBrowser:
         logger.info(f"  Scraped {len(all_ads)} ads for '{keyword}'")
         return all_ads
 
-    def get_page_ads(self, page_id: str, max_ads: int = 200) -> list[dict]:
+    def get_page_ads(self, page_id: str, max_ads: int = 200) -> tuple[int, list[dict]]:
         """
-        Visit a page's own Ads Library view and collect all its active ads.
-        Uses numeric page IDs (view_all_page_id) or slug-based search.
+        Visit a page's own Ads Library view.
+        Returns (follower_count, ads_list).
+        Follower count is extracted from the page header shown on this view.
         """
         country = self.countries[0] if self.countries else "US"
         if page_id.isdigit():
@@ -351,10 +352,26 @@ class AdsLibraryBrowser:
 
         all_ads: list[dict] = []
         seen_keys: set[str] = set()
+        follower_count = 0
 
         try:
             self._driver.get(url)
             time.sleep(4)
+
+            # Extract follower count from the page header shown on this view.
+            # The dedicated page view shows "X followers" or "X people like this"
+            # in the header above the ad results.
+            try:
+                follower_text = self._driver.execute_script("""
+                    var t = document.body.innerText || '';
+                    var m = t.match(/([\d][\d,\\.]*\\s*[KkMm]?)\\s*(people like this|followers?|likes?)/i);
+                    return m ? m[0] : '';
+                """) or ""
+                if follower_text:
+                    follower_count = parse_follower_count(follower_text)
+                    logger.debug(f"  Followers for {page_id}: {follower_text} → {follower_count}")
+            except Exception:
+                pass
 
             no_new = 0
             for _ in range(15):
@@ -389,7 +406,7 @@ class AdsLibraryBrowser:
         except WebDriverException as e:
             logger.debug(f"  get_page_ads error for {page_id}: {str(e)[:100]}")
 
-        return all_ads
+        return follower_count, all_ads
 
     def _dismiss_dialogs(self):
         for text in ["Allow all cookies", "Accept all",

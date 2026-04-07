@@ -136,6 +136,7 @@ class FBAdsScraper:
 
         self._page_ads: dict[str, list[dict]] = defaultdict(list)
         self._page_keywords: dict[str, set[str]] = defaultdict(set)
+        self._page_followers: dict[str, int] = {}
         self._seen_keys: set[str] = set()
         self._searched_keywords: set[str] = set()
 
@@ -221,12 +222,14 @@ class FBAdsScraper:
             )
 
             for pid, existing_ads in promising.items():
-                fan_count = self._avg_followers(existing_ads)
+                fan_count = self._page_followers.get(pid, self._avg_followers(existing_ads))
                 # Skip pages obviously outside follower range
                 if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
                     continue
 
-                page_ads = browser.get_page_ads(pid, max_ads=200)
+                page_follower_count, page_ads = browser.get_page_ads(pid, max_ads=200)
+                if page_follower_count > 0:
+                    self._page_followers[pid] = page_follower_count
                 if not page_ads:
                     continue
 
@@ -262,7 +265,7 @@ class FBAdsScraper:
         total = len(self._page_ads)
 
         for idx, (page_id, ads) in enumerate(self._page_ads.items(), 1):
-            fan_count = self._avg_followers(ads)
+            fan_count = self._page_followers.get(page_id, self._avg_followers(ads))
 
             if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
                 continue
