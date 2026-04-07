@@ -29,6 +29,22 @@ _PLATFORM_BLOCKLIST = {
     "wish.com", "banggood",
 }
 
+# Page names that indicate Facebook's login wall was scraped instead of a real page
+_JUNK_PAGE_NAMES = {
+    "log in", "login", "sign in", "sign up", "facebook", "create account",
+    "log into facebook", "connect with facebook",
+}
+
+# Well-known large brands that will never be dropshipping stores
+_KNOWN_BIG_BRANDS = {
+    "intuit", "quickbooks", "turbotax", "volvo", "chatgpt", "openai",
+    "red lobster", "lay's", "lays", "planet fitness", "fidelity",
+    "bank of america", "ally bank", "ally financial", "carecredit",
+    "king arthur", "nectar sleep", "lovevery", "tracy anderson",
+    "pocket fm", "adobe", "turbotax", "chewy",
+}
+
+
 def _is_blocked(raw: dict) -> bool:
     """Return True if this ad is from a supplier marketplace we want to skip."""
     check = " ".join([
@@ -37,6 +53,19 @@ def _is_blocked(raw: dict) -> bool:
         (raw.get("ad_body") or "").lower(),
     ])
     return any(term in check for term in _PLATFORM_BLOCKLIST)
+
+
+def _is_junk_page(page_name: str, page_id: str) -> bool:
+    """Return True if this page is a login-wall artifact or known big brand."""
+    name = (page_name or "").lower().strip()
+    if name in _JUNK_PAGE_NAMES:
+        return True
+    if any(brand in name for brand in _KNOWN_BIG_BRANDS):
+        return True
+    # Numeric-only page IDs with generic names are often login artifacts
+    if name in ("log in", "") and page_id.isdigit():
+        return True
+    return False
 
 SEED_KEYWORDS = [
     "buy now",
@@ -439,8 +468,12 @@ class FBAdsScraper:
             # Filter blocklisted platforms — catches entries loaded from old state files
             if any(term in page_id.lower() for term in _PLATFORM_BLOCKLIST):
                 continue
-            if ads and any(term in (ads[0].get("page_name") or "").lower()
-                           for term in _PLATFORM_BLOCKLIST):
+            page_name = (ads[0].get("page_name") or "") if ads else ""
+            if any(term in page_name.lower() for term in _PLATFORM_BLOCKLIST):
+                continue
+            # Filter login-wall artifacts and known big brands
+            if _is_junk_page(page_name, page_id):
+                logger.debug(f"  SKIP {page_id}: junk/big-brand page ({page_name!r})")
                 continue
 
             fan_count = self._page_followers.get(page_id, self._avg_followers(ads))
