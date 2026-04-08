@@ -283,7 +283,10 @@ class AdsLibraryBrowser:
             self._dismiss_dialogs()
             time.sleep(1)
 
-            # Log what page loaded so we can diagnose issues
+            # Wait for actual ad cards — retries consent dismissal if wall still up
+            if not self._wait_for_ads(timeout=15):
+                logger.debug(f"  No ads loaded for '{keyword}' (consent wall or empty results)")
+
             title = self._driver.title
             logger.debug(f"  Page title: {title}")
 
@@ -364,7 +367,9 @@ class AdsLibraryBrowser:
 
         try:
             self._driver.get(url)
-            time.sleep(4)
+            time.sleep(PAGE_LOAD_WAIT)
+            self._dismiss_dialogs()
+            self._wait_for_ads(timeout=12)
 
             # Extract follower count from the page header shown on this view.
             # The dedicated page view shows "X followers" or "X people like this"
@@ -459,15 +464,101 @@ class AdsLibraryBrowser:
                 pass
 
     def _dismiss_dialogs(self):
-        for text in ["Allow all cookies", "Accept all",
-                     "Allow essential and optional cookies",
-                     "Only allow essential cookies"]:
+        """
+        Dismiss cookie consent / GDPR dialogs that block ad content.
+        Tries multiple strategies since Facebook's consent UI varies by region.
+        """
+        consent_texts = [
+            "Allow all cookies",
+            "Accept all",
+            "Allow essential and optional cookies",
+            "Only allow essential cookies",
+            "Decline optional cookies",
+            "Accept All",
+            "Allow All",
+            "OK",
+            "Got it",
+            "I Accept",
+            "Continue",
+            "Allow cookies",
+        ]
+
+        # Strategy 1: find button by visible text (most reliable)
+        for text in consent_texts:
             try:
-                btns = self._driver.find_elements(By.XPATH, f"//button[contains(.,'{text}')]")
+                btns = self._driver.find_elements(
+                    By.XPATH,
+                    f"//button[normalize-space(.)='{text}' or contains(.,'{text}')]"
+                )
                 for btn in btns:
                     if btn.is_displayed():
                         btn.click()
-                        time.sleep(0.8)
+                        logger.debug(f"  Dismissed dialog via button text: '{text}'")
+                        time.sleep(1.2)
                         return
             except Exception:
                 pass
+
+        # Strategy 2: look for the consent dialog by data-testid / aria roles
+        try:
+            btns = self._driver.find_elements(
+                By.XPATH,
+                "//div[@role='dialog']//button | //div[@data-testid='cookie-policy-dialog']//button"
+            )
+            for btn in btns:
+                if btn.is_displayed():
+                    btn.click()
+                    logger.debug("  Dismissed dialog via role=dialog button")
+                    time.sleep(1.2)
+                    return
+        except Exception:
+            pass
+
+        # Strategy 3: JavaScript click on any visible consent button
+        try:
+            self._driver.execute_script("""
+                var texts = ['Allow all cookies','Accept all','Accept All','Allow All',
+                             'Only allow essential cookies','Decline optional cookies','OK'];
+                var btns = document.querySelectorAll('button');
+                for (var i = 0; i < btns.length; i++) {
+                    var t = btns[i].innerText.trim();
+                    if (texts.indexOf(t) !== -1 && btns[i].offsetParent !== null) {
+                        btns[i].click();
+                        break;
+                    }
+                }
+            """)
+            time.sleep(1.0)
+        except Exception:
+            pass
+
+    def _wait_for_ads(self, timeout: int = 12) -> bool:
+        """
+        Wait until ad cards appear on the page.
+        Returns True if ads loaded, False if timeout or consent wall detected.
+        """
+        import time as _time
+        deadline = _time.time() + timeout
+        while _time.time() < deadline:
+            try:
+                # Check for ad card indicators in the page text
+                text = self._driver.execute_script(
+                    "return document.body ? document.body.innerText : '';"
+                ) or ""
+                # These strings appear when real ad results are loaded
+                if any(x in text for x in [
+                    "Started running", "running on", "Active since",
+                    "ads use this creative", "See ad details",
+                ]):
+                    return True
+                # Detect consent wall still showing
+                if any(x in text for x in [
+                    "Allow all cookies", "Accept all", "cookie",
+                    "Before you continue",
+                ]):
+                    self._dismiss_dialogs()
+            except Exception:
+                pass
+            _time.sleep(1.5)
+        return False
+
