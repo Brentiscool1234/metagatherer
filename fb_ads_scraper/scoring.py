@@ -19,8 +19,8 @@ Score < 5  → excluded
 
 from datetime import datetime, timezone
 
-WINNER_THRESHOLD = 7.0
-NEAR_MISS_THRESHOLD = 5.0
+WINNER_THRESHOLD = 5.5
+NEAR_MISS_THRESHOLD = 3.0
 
 CRITERIA = {
     "ad_count":      ("Active Ads",    2.5),

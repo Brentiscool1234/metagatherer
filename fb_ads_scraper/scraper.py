@@ -249,11 +249,11 @@ class FBAdsScraper:
         self,
         countries: list[str] = None,
         days: int = 7,
-        min_ads: int = 12,
+        min_ads: int = 5,
         min_followers: int = 10,
         max_followers: int = 2000,
         prefer_video: bool = True,
-        require_shop_now: bool = True,
+        require_shop_now: bool = False,
         max_keyword_depth: int = 3,
         max_keywords: int = 30,
         max_ads_per_keyword: int = 120,
@@ -500,67 +500,60 @@ class FBAdsScraper:
 
     def _evaluate_pages(self, browser=None) -> list[WinningProduct]:
         winners = []
+        stats = {"total": 0, "blocked": 0, "junk": 0, "niche_miss": 0,
+                 "follower_range": 0, "no_recent": 0, "low_ads": 0, "no_cta": 0, "passed": 0}
 
         for page_id, ads in self._page_ads.items():
+            stats["total"] += 1
             # Filter blocklisted platforms — catches entries loaded from old state files
             if any(term in page_id.lower() for term in _PLATFORM_BLOCKLIST):
-                continue
+                stats["blocked"] += 1; continue
             page_name = (ads[0].get("page_name") or "") if ads else ""
             if any(term in page_name.lower() for term in _PLATFORM_BLOCKLIST):
-                continue
+                stats["blocked"] += 1; continue
             # Filter login-wall artifacts and known big brands
             if _is_junk_page(page_name, page_id):
-                logger.debug(f"  SKIP {page_id}: junk/big-brand page ({page_name!r})")
-                continue
+                logger.debug(f"  SKIP {page_id}: junk/big-brand ({page_name!r})")
+                stats["junk"] += 1; continue
 
             # Niche relevance filter — fast keyword check, no API calls needed
             if self.niche:
                 niche_lower = self.niche.lower()
-                niche_key = next(
-                    (k for k in NICHE_TERMS if k in niche_lower), None
-                )
+                niche_key = next((k for k in NICHE_TERMS if k in niche_lower), None)
                 if niche_key:
                     terms = NICHE_TERMS[niche_key]
-                    all_text = " ".join(
-                        (page_name + " " + " ".join(
-                            b for a in ads[:5]
-                            for b in (a.get("ad_creative_bodies") or [])
-                        )).lower().split()
-                    )
+                    all_text = (page_name + " " + " ".join(
+                        b for a in ads[:5]
+                        for b in (a.get("ad_creative_bodies") or [])
+                    )).lower()
                     if not any(t in all_text for t in terms):
-                        logger.debug(f"  SKIP {page_id}: not relevant to niche '{self.niche}'")
-                        continue
+                        logger.debug(f"  SKIP {page_id}: not in niche '{self.niche}'")
+                        stats["niche_miss"] += 1; continue
 
             fan_count = self._page_followers.get(page_id, self._avg_followers(ads))
-
             if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
-                logger.debug(f"  SKIP {page_id}: followers {fan_count} outside range")
-                continue
+                logger.debug(f"  SKIP {page_id}: {fan_count} followers outside range")
+                stats["follower_range"] += 1; continue
 
-            # All ads in the Ads Library are currently active — no need to filter
-            # by start date strictly.  We use a generous 90-day window only to
-            # exclude ads that have clearly been sitting stale for months.
             recent = [a for a in ads if _within_days(a, max(self.days * 10, 90))]
             if not recent:
-                recent = ads  # if nothing passes, use all (dates may not be parsed)
+                recent = ads
 
             for cluster in cluster_page_ads(recent):
-                # Sum "N ads use this creative" across all cards in the cluster
                 total_versions = sum(a.get("_ad_versions", 1) for a in cluster)
                 if total_versions < self.min_ads:
-                    logger.debug(
-                        f"  SKIP {page_id}: cluster has {total_versions} versions "
-                        f"(need {self.min_ads})"
-                    )
-                    continue
+                    logger.debug(f"  SKIP {page_id}: {total_versions} ad versions (need {self.min_ads})")
+                    stats["low_ads"] += 1; continue
 
                 shop_now = sum(
                     1 for a in cluster
                     if a.get("_has_shop_now") or has_shop_now_cta(a)
                 )
                 if self.require_shop_now and shop_now == 0:
-                    logger.debug(f"  SKIP {page_id}: no shop-now CTA detected")
-                    continue
+                    logger.debug(f"  SKIP {page_id}: no shop-now CTA")
+                    stats["no_cta"] += 1; continue
+
+                stats["passed"] += 1
 
                 is_video = any(
                     (a.get("media_type") or "").upper() == "VIDEO"
@@ -647,10 +640,16 @@ class FBAdsScraper:
             # Re-sort after penalties
             winners.sort(key=lambda w: -w.score)
 
+        logger.info(
+            f"Filter stats — total:{stats['total']} blocked:{stats['blocked']} "
+            f"junk:{stats['junk']} niche_miss:{stats['niche_miss']} "
+            f"follower_range:{stats['follower_range']} low_ads:{stats['low_ads']} "
+            f"no_cta:{stats['no_cta']} passed:{stats['passed']}"
+        )
         true_winners = [w for w in winners if w.score >= WINNER_THRESHOLD]
         logger.info(
-            f"Evaluated {len(winners)} candidates → "
-            f"{len(true_winners)} scored ≥{WINNER_THRESHOLD}"
+            f"Scored {len(winners)} candidates → "
+            f"{len(true_winners)} winners (≥{WINNER_THRESHOLD})"
         )
         for w in true_winners:
             logger.info(

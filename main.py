@@ -48,7 +48,7 @@ def _setup_logging(verbose: bool):
               help="Target country codes (repeatable: -c US -c GB)")
 @click.option("--days", "-d", default=7, show_default=True, type=int,
               help="Lookback window in days for ad start dates.")
-@click.option("--min-ads", default=12, show_default=True, type=int,
+@click.option("--min-ads", default=5, show_default=True, type=int,
               help="Minimum active ads per product cluster.")
 @click.option("--min-followers", default=10, show_default=True, type=int,
               help="Minimum page follower count.")
@@ -67,7 +67,7 @@ def _setup_logging(verbose: bool):
               help="Max ads to collect per keyword search.")
 @click.option("--video-only/--no-video-only", default=False, show_default=True,
               help="Only include pages that have at least one video ad.")
-@click.option("--require-shop-now/--no-require-shop-now", default=True, show_default=True,
+@click.option("--require-shop-now/--no-require-shop-now", default=False, show_default=True,
               help="Require Shop Now / Buy Now CTA detected in ad copy.")
 @click.option("--headless/--no-headless", default=False, show_default=True,
               help="Run Chrome headlessly (no visible window). Default: visible.")
