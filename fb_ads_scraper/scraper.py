@@ -159,6 +159,20 @@ NICHE_SEED_MAP: dict[str, list[str]] = {
 # Pages seen this many times in Phase 1 get a full verification visit
 PAGE_VISIT_THRESHOLD = 2
 
+# Maps niche key → related terms for fast keyword-based relevance filtering
+NICHE_TERMS: dict[str, set[str]] = {
+    "pet":      {"dog","cat","pet","pup","puppy","kitten","feline","canine","fur","paw","leash","collar","treat","feeder","litter","aquarium","fish","bird","hamster","rabbit"},
+    "fitness":  {"fitness","workout","exercise","gym","muscle","weight","yoga","protein","resistance","band","stretch","posture","knee","back","pain","relief","brace","sleeve","foam","roller","massage"},
+    "kitchen":  {"kitchen","cook","chef","slice","chop","dice","peel","gadget","knife","cutting","board","pan","pot","air fryer","blender","juicer","coffee","grater","strainer","utensil"},
+    "beauty":   {"skin","face","hair","beauty","glow","serum","mask","lash","brow","nail","lip","eye","acne","wrinkle","moistur","collagen","vitamin c","retinol","scalp","dandruff"},
+    "home":     {"home","room","bedroom","bathroom","kitchen","decor","light","lamp","curtain","pillow","blanket","organiz","storage","shelf","humidif","diffuser","air purif","projector","candle"},
+    "tech":     {"tech","phone","laptop","computer","cable","charge","wireless","bluetooth","usb","screen","keyboard","mouse","webcam","stand","holder","earbuds","headphone","speaker","ring light"},
+    "jewelry":  {"jewelry","necklace","bracelet","ring","earring","pendant","charm","gold","silver","crystal","pearl","diamond","bead","anklet","choker","locket"},
+    "baby":     {"baby","infant","toddler","newborn","diaper","stroller","crib","nursery","teething","pacifier","breastfeed","bottle","monitor","carrier","swaddle"},
+    "outdoor":  {"outdoor","camping","hiking","trail","backpack","tent","survival","waterproof","solar","headlamp","fire","fishing","hunting","kayak","bike","cycle"},
+    "car":      {"car","vehicle","auto","truck","suv","dashboard","seat","trunk","tyre","tire","windshield","mirror","park","drive","road","motor"},
+}
+
 
 def _to_standard_ad(raw: dict, keyword: str) -> dict:
     page_url = raw.get("page_url", "")
@@ -296,9 +310,11 @@ class FBAdsScraper:
         }
 
     def run(self, extra_keywords: list[str] = None) -> list[WinningProduct]:
-        # If a niche was given, let AI generate targeted seed keywords for it.
-        # These replace the generic seeds (buy now / shop now / etc.) so the
-        # BFS starts inside the niche right away.
+        # Generic seeds that reliably return results from FB Ads Library.
+        # Always included as a safety net so Phase 1 collects something even
+        # if niche-specific terms return 0 ads.
+        _GENERIC_SAFETY_SEEDS = ["buy now", "shop now", "order now", "get yours"]
+
         if self.niche:
             if self.use_ai:
                 niche_kws = keywords_for_niche(self.niche, count=10)
@@ -307,30 +323,31 @@ class FBAdsScraper:
 
             if niche_kws:
                 logger.info(f"Niche '{self.niche}' → AI seeds: {niche_kws}")
-                seeds = niche_kws
+                niche_seeds = niche_kws
             else:
-                # Try hardcoded niche map before falling back to generic seeds
+                # Try hardcoded niche map
                 niche_lower = self.niche.lower()
-                seeds = next(
+                niche_seeds = next(
                     (kws for key, kws in NICHE_SEED_MAP.items() if key in niche_lower),
                     None,
                 )
-                if seeds:
-                    logger.info(
-                        f"Niche '{self.niche}' → using built-in seed keywords "
-                        f"(set ANTHROPIC_API_KEY for AI-generated seeds)"
-                    )
+                if niche_seeds:
+                    logger.info(f"Niche '{self.niche}' → built-in seed keywords")
                 else:
                     logger.warning(
-                        f"No built-in seeds for niche '{self.niche}' and AI unavailable "
-                        f"— using generic seeds. Set ANTHROPIC_API_KEY for better results."
+                        f"No built-in seeds for niche '{self.niche}' — "
+                        f"using generic seeds. Set ANTHROPIC_API_KEY for AI seeds."
                     )
-                    seeds = list(SEED_KEYWORDS)
+                    niche_seeds = []
+
+            # Niche seeds first, then generic safety seeds (deduped)
+            seen = set(niche_seeds)
+            seeds = list(niche_seeds) + [s for s in _GENERIC_SAFETY_SEEDS if s not in seen]
         else:
             seeds = list(SEED_KEYWORDS)
 
         if extra_keywords:
-            seeds = list(extra_keywords) + seeds
+            seeds = list(extra_keywords) + [s for s in seeds if s not in extra_keywords]
 
         browser = AdsLibraryBrowser(countries=self.countries, headless=self.headless)
         browser.start()
@@ -495,6 +512,24 @@ class FBAdsScraper:
             if _is_junk_page(page_name, page_id):
                 logger.debug(f"  SKIP {page_id}: junk/big-brand page ({page_name!r})")
                 continue
+
+            # Niche relevance filter — fast keyword check, no API calls needed
+            if self.niche:
+                niche_lower = self.niche.lower()
+                niche_key = next(
+                    (k for k in NICHE_TERMS if k in niche_lower), None
+                )
+                if niche_key:
+                    terms = NICHE_TERMS[niche_key]
+                    all_text = " ".join(
+                        (page_name + " " + " ".join(
+                            b for a in ads[:5]
+                            for b in (a.get("ad_creative_bodies") or [])
+                        )).lower().split()
+                    )
+                    if not any(t in all_text for t in terms):
+                        logger.debug(f"  SKIP {page_id}: not relevant to niche '{self.niche}'")
+                        continue
 
             fan_count = self._page_followers.get(page_id, self._avg_followers(ads))
 
