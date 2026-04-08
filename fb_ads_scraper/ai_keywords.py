@@ -24,8 +24,19 @@ _MODEL_FALLBACK = [
 ]
 
 
+def _sanitize(text: str) -> str:
+    """Strip characters that break JSON serialization in API requests."""
+    # Remove null bytes, surrogates, and other control chars except newline/tab
+    return re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f\ud800-\udfff]", "", text)
+
+
 def _call(client, prompt: str, max_tokens: int = 500) -> str:
     """Call Claude with automatic model fallback. Returns response text."""
+    prompt = _sanitize(prompt)
+    # Cap prompt at ~12k chars to stay well within token limits
+    if len(prompt) > 12000:
+        prompt = prompt[:12000] + "\n...[truncated]"
+
     last_err = None
     for model in _MODEL_FALLBACK:
         try:
@@ -38,11 +49,15 @@ def _call(client, prompt: str, max_tokens: int = 500) -> str:
         except Exception as e:
             last_err = e
             err_str = str(e)
-            if "400" in err_str or "invalid_request" in err_str.lower() or "model" in err_str.lower():
-                logger.debug(f"Model {model} rejected ({err_str[:80]}), trying next...")
+            # 400 can mean bad model name OR bad request content — try next model
+            if any(x in err_str for x in ("400", "invalid_request", "model", "not_found")):
+                logger.debug(f"Model {model} failed ({err_str[:120]}), trying next...")
                 continue
-            raise  # Non-model errors (auth, network) — don't retry
-    raise last_err
+            # Auth / network errors — no point retrying other models
+            logger.warning(f"AI call failed: {err_str[:120]}")
+            return ""
+    logger.debug(f"All models failed: {str(last_err)[:120]}")
+    return ""
 
 
 def keywords_for_niche(niche: str, count: int = 10) -> list[str]:

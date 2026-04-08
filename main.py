@@ -38,7 +38,8 @@ def _setup_logging(verbose: bool):
         format="%(message)s",
         handlers=[RichHandler(console=console, rich_tracebacks=True, show_path=False)],
     )
-    for lib in ("urllib3", "requests", "charset_normalizer", "selenium"):
+    for lib in ("urllib3", "requests", "charset_normalizer", "selenium",
+                "httpx", "httpcore", "anthropic", "hpack"):
         logging.getLogger(lib).setLevel(logging.WARNING)
 
 
