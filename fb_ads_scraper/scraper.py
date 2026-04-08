@@ -17,7 +17,7 @@ from typing import Optional
 
 from .browser import AdsLibraryBrowser, parse_follower_count, parse_date_text
 from .analysis import cluster_page_ads, extract_new_keywords, has_shop_now_cta
-from .ai_keywords import expand_keywords_with_ai, keywords_for_niche
+from .ai_keywords import expand_keywords_with_ai, keywords_for_niche, is_dropshipping_page
 from .shopify import is_shopify_store
 from .state import save_state, load_state, state_summary, DEFAULT_STATE_FILE
 
@@ -41,7 +41,19 @@ _KNOWN_BIG_BRANDS = {
     "red lobster", "lay's", "lays", "planet fitness", "fidelity",
     "bank of america", "ally bank", "ally financial", "carecredit",
     "king arthur", "nectar sleep", "lovevery", "tracy anderson",
-    "pocket fm", "adobe", "turbotax", "chewy",
+    "pocket fm", "adobe", "chewy", "taco bell", "tacobell",
+    "mcdonald", "burger king", "wendy's", "subway", "starbucks",
+    "walmart", "target", "costco", "nike", "adidas", "apple",
+    "samsung", "google", "microsoft", "netflix", "spotify",
+    "doordash", "uber eats", "grubhub", "instacart",
+    "state farm", "geico", "progressive", "allstate",
+    "chase", "wells fargo", "citibank", "capital one",
+    "h&r block", "creditkarma", "credit karma",
+    "factor", "factor meals", "hims", "hers", "noom",
+    "weight watchers", "nutrisystem", "bowflex",
+    "casper", "purple mattress", "saatva",
+    "indeed", "linkedin", "ziprecruiter",
+    "chewy", "petco", "petsmart",
 }
 
 
@@ -585,6 +597,21 @@ class FBAdsScraper:
             w.score, w.score_breakdown = score_product(w)
 
         winners.sort(key=lambda w: -w.score)
+
+        # AI dropshipping check — only on top candidates to avoid hundreds of calls
+        if self.use_ai:
+            for w in winners[:30]:
+                bodies = w.sample_ad_body.split("\n") if w.sample_ad_body else []
+                is_drop, drop_reason = is_dropshipping_page(w.page_name, bodies)
+                if not is_drop:
+                    # Penalise heavily so it drops below winner threshold
+                    w.score = max(0.0, round(w.score - 4.0, 2))
+                    w.score_breakdown["ai_filter"] = -4.0
+                    logger.debug(f"  AI penalised {w.page_name}: {drop_reason}")
+
+            # Re-sort after penalties
+            winners.sort(key=lambda w: -w.score)
+
         true_winners = [w for w in winners if w.score >= WINNER_THRESHOLD]
         logger.info(
             f"Evaluated {len(winners)} candidates → "

@@ -371,20 +371,22 @@ class AdsLibraryBrowser:
             self._dismiss_dialogs()
             self._wait_for_ads(timeout=12)
 
-            # Extract follower count from the page header shown on this view.
-            # The dedicated page view shows "X followers" or "X people like this"
-            # in the header above the ad results.
-            try:
-                follower_text = self._driver.execute_script(r"""
-                    var t = document.body.innerText || '';
-                    var m = t.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i);
-                    return m ? m[0] : '';
-                """) or ""
-                if follower_text:
-                    follower_count = parse_follower_count(follower_text)
-                    logger.debug(f"  Followers for {page_id}: {follower_text} → {follower_count}")
-            except Exception:
-                pass
+            # Extract follower count from the page header.
+            # Retry a few times since the header renders after the main content.
+            for _attempt in range(4):
+                try:
+                    follower_text = self._driver.execute_script(r"""
+                        var t = document.body.innerText || '';
+                        var m = t.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i);
+                        return m ? m[0] : '';
+                    """) or ""
+                    if follower_text:
+                        follower_count = parse_follower_count(follower_text)
+                        logger.debug(f"  Followers for {page_id}: {follower_text} → {follower_count}")
+                        break
+                    time.sleep(1.5)
+                except Exception:
+                    break
 
             no_new = 0
             for _ in range(15):

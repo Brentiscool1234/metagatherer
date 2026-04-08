@@ -271,3 +271,71 @@ Return ONLY the JSON array, nothing else."""
     except Exception as e:
         logger.debug(f"AI keyword expansion failed: {e}")
         return []
+
+
+def is_dropshipping_page(page_name: str, ad_bodies: list[str]) -> tuple[bool, str]:
+    """
+    Use Claude to decide if a page is actually selling a physical dropshipping
+    product vs. being a restaurant, SaaS, media company, big brand, etc.
+
+    Returns (is_dropshipping: bool, reason: str).
+    Falls back to (True, "ai unavailable") so nothing is wrongly excluded
+    when AI isn't configured.
+    """
+    try:
+        import anthropic
+    except ImportError:
+        return True, "ai unavailable"
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return True, "ai unavailable"
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    samples = [b.strip() for b in ad_bodies if b.strip()][:8]
+    bodies_text = "\n".join(f"- {s[:200]}" for s in samples) if samples else "(no ad body text)"
+
+    prompt = f"""You are classifying Facebook ads to find dropshipping product stores.
+
+Page name: "{page_name}"
+
+Sample ad copy from this page:
+{bodies_text}
+
+Is this page a DROPSHIPPING / ECOMMERCE store selling physical products?
+
+A dropshipping store:
+- Sells a specific physical product (gadgets, beauty tools, pet items, fitness gear, jewelry, home goods)
+- Has generic product-focused ads ("Get 50% off today", "As seen on TV", "Ships worldwide")
+- Unknown/small brand name
+- Typically uses Shopify
+
+NOT a dropshipping store:
+- Restaurant or food chain (Taco Bell, McDonald's)
+- SaaS / app / software
+- Financial services, insurance, bank
+- Large established brand (Nike, Apple, Samsung)
+- Media / entertainment
+- Service business
+- Non-profit / charity
+
+Answer with ONLY: YES or NO, then a comma, then one short reason (max 8 words).
+Examples:
+YES, posture corrector gadget store
+NO, restaurant chain not physical product
+YES, pet accessory dropshipping store
+NO, software subscription service"""
+
+    try:
+        text = _call(client, prompt, max_tokens=30)
+        if not text:
+            return True, "ai unavailable"
+        text = text.strip().upper()
+        is_drop = text.startswith("YES")
+        # Extract reason after the comma
+        reason = text.split(",", 1)[1].strip().lower() if "," in text else ""
+        return is_drop, reason
+    except Exception as e:
+        logger.debug(f"Dropshipping classifier failed: {e}")
+        return True, "ai unavailable"
