@@ -6,7 +6,9 @@ Install:  pip install selenium
 Chrome driver is auto-managed by Selenium 4.x.
 """
 
+import json
 import logging
+import os
 import re
 import time
 from typing import Optional
@@ -22,6 +24,7 @@ logger = logging.getLogger(__name__)
 ADS_LIBRARY_BASE = "https://www.facebook.com/ads/library/"
 SCROLL_DELAY = 2.5
 PAGE_LOAD_WAIT = 5
+COOKIES_FILE = "fb_cookies.json"
 
 MONTH_MAP = {
     "jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
@@ -66,8 +69,6 @@ def parse_date_text(text: str) -> Optional[str]:
 
 # ---------------------------------------------------------------------------
 # Injected JavaScript — returns a plain JSON-safe array of ad objects.
-# Wrapped in try/catch so any JS error returns [] instead of crashing.
-# All strings are cleaned of control characters before returning.
 # ---------------------------------------------------------------------------
 _EXTRACT_JS = r"""
 var clean = function(s) {
@@ -117,11 +118,8 @@ try {
         seen.push(container);
 
         var fullText = container.innerText || '';
-
-        /* page name */
         var pageName = clean(link.textContent);
 
-        /* follower text */
         var followerText = '';
         var spans = Array.prototype.slice.call(container.querySelectorAll('span,div'));
         spans.forEach(function(el) {
@@ -131,7 +129,6 @@ try {
             }
         });
 
-        /* video */
         var hasVideo = container.querySelector('video') !== null
                     || (container.innerHTML || '').indexOf('<video') !== -1;
 
@@ -144,7 +141,6 @@ try {
             var t = (el.textContent || '').trim().toLowerCase();
             if (CTA.indexOf(t) !== -1) {
                 ctaButton = (el.textContent || '').trim();
-                /* Only grab href from real anchor tags — divs have no href */
                 if (!ctaUrl && el.tagName === 'A' && el.href) {
                     ctaUrl = el.href;
                 }
@@ -160,7 +156,6 @@ try {
             || lowerText.indexOf('order now') !== -1
             || lowerText.indexOf('get yours') !== -1;
 
-        /* start date */
         var dateText = '';
         var dm = fullText.match(/(?:Started running|Active since|running on)[^\n]{0,60}/i);
         if (dm) dateText = dm[0];
@@ -169,13 +164,11 @@ try {
             if (dm2) dateText = dm2[0];
         }
 
-        /* snapshot url */
         var snapshotUrl = '';
         var snapLinks = Array.prototype.slice.call(
             container.querySelectorAll('a[href*="ads/archive"]'));
         if (snapLinks.length) snapshotUrl = snapLinks[0].href || '';
 
-        /* ad body — longest single-child text block */
         var adBody = '';
         var nodes = Array.prototype.slice.call(
             container.querySelectorAll('div,p,span'));
@@ -190,7 +183,6 @@ try {
             }
         });
 
-        /* "N ads use this creative and text" — the real ad count signal */
         var adVersions = 1;
         var versionMatch = fullText.match(/(\d+)\s+ads?\s+use\s+this/i);
         if (versionMatch) adVersions = parseInt(versionMatch[1], 10) || 1;
@@ -205,7 +197,7 @@ try {
             has_video:     hasVideo ? true : false,
             has_shop_now:  hasShopNow ? true : false,
             cta_button:    clean(ctaButton),
-            cta_url:       ctaUrl,   /* raw href — do NOT clean, preserves l.php encoding */
+            cta_url:       ctaUrl,
             date_text:     clean(dateText),
             snapshot_url:  clean(snapshotUrl),
             ad_body:       clean(adBody),
@@ -248,6 +240,7 @@ class AdsLibraryBrowser:
         self.countries = countries
         self.headless = headless
         self._driver: Optional[webdriver.Chrome] = None
+        self._cookies_loaded = False
 
     def start(self):
         logger.info("Starting Chrome browser...")
@@ -255,13 +248,169 @@ class AdsLibraryBrowser:
         if not self.headless:
             logger.info("Chrome window opened — don't close it during the scan.")
 
+        # Navigate to Facebook first (required before loading cookies)
+        self._driver.get("https://www.facebook.com/ads/library/")
+        time.sleep(3)
+        self._load_cookies()
+        if self._cookies_loaded:
+            # Reload with cookies applied
+            self._driver.get("https://www.facebook.com/ads/library/")
+            time.sleep(3)
+        self._dismiss_dialogs()
+
     def stop(self):
         if self._driver:
             try:
+                self._save_cookies()
                 self._driver.quit()
             except Exception:
                 pass
         logger.info("Browser closed.")
+
+    def _save_cookies(self):
+        """Save cookies so consent is remembered across runs."""
+        try:
+            cookies = self._driver.get_cookies()
+            with open(COOKIES_FILE, "w") as f:
+                json.dump(cookies, f)
+            logger.debug(f"Saved {len(cookies)} cookies to {COOKIES_FILE}")
+        except Exception as e:
+            logger.debug(f"Cookie save failed: {e}")
+
+    def _load_cookies(self):
+        """Load previously saved cookies to skip consent wall."""
+        if not os.path.exists(COOKIES_FILE):
+            return
+        try:
+            with open(COOKIES_FILE) as f:
+                cookies = json.load(f)
+            for cookie in cookies:
+                # Selenium requires domain to match
+                cookie.pop("sameSite", None)
+                try:
+                    self._driver.add_cookie(cookie)
+                except Exception:
+                    pass
+            self._cookies_loaded = True
+            logger.debug(f"Loaded {len(cookies)} cookies from {COOKIES_FILE}")
+        except Exception as e:
+            logger.debug(f"Cookie load failed: {e}")
+
+    def _dismiss_dialogs(self):
+        """Aggressively dismiss cookie / GDPR consent walls."""
+        for attempt in range(5):
+            dismissed = self._try_dismiss()
+            if dismissed:
+                time.sleep(1.5)
+                self._save_cookies()  # save immediately after accepting
+                return
+            if attempt < 4:
+                time.sleep(1.5)
+
+    def _try_dismiss(self) -> bool:
+        """Single attempt to find and click a consent button. Returns True if clicked."""
+
+        # Strategy 1: exact + partial text match on buttons
+        for text in [
+            "Allow all cookies", "Accept all", "Allow All", "Accept All",
+            "Allow essential and optional cookies",
+            "Only allow essential cookies", "Decline optional cookies",
+            "OK", "Got it", "I Accept", "Continue", "Allow cookies",
+            "Accept and continue", "Allow all",
+        ]:
+            try:
+                btns = self._driver.find_elements(
+                    By.XPATH,
+                    f"//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', "
+                    f"'abcdefghijklmnopqrstuvwxyz'), '{text.lower()}')]"
+                )
+                for btn in btns:
+                    if btn.is_displayed():
+                        btn.click()
+                        logger.debug(f"Dismissed via button text '{text}'")
+                        return True
+            except Exception:
+                pass
+
+        # Strategy 2: JS — click any visible button whose text matches consent keywords
+        try:
+            clicked = self._driver.execute_script("""
+                var keywords = ['allow','accept','cookie','decline','continue','got it','ok'];
+                var btns = Array.prototype.slice.call(document.querySelectorAll('button'));
+                for (var i = 0; i < btns.length; i++) {
+                    var b = btns[i];
+                    var t = (b.innerText || '').toLowerCase().trim();
+                    if (t.length < 60 && keywords.some(function(k){ return t.indexOf(k) !== -1; })) {
+                        if (b.offsetParent !== null) {
+                            b.click();
+                            return t;
+                        }
+                    }
+                }
+                return null;
+            """)
+            if clicked:
+                logger.debug(f"Dismissed via JS click: '{clicked}'")
+                return True
+        except Exception:
+            pass
+
+        # Strategy 3: any button inside an overlay / dialog
+        try:
+            btns = self._driver.find_elements(
+                By.XPATH,
+                "//div[@role='dialog']//button | //*[@data-testid='cookie-policy-dialog']//button"
+            )
+            for btn in btns:
+                if btn.is_displayed():
+                    btn.click()
+                    logger.debug("Dismissed via role=dialog button")
+                    return True
+        except Exception:
+            pass
+
+        return False
+
+    def _wait_for_ads(self, timeout: int = 20) -> bool:
+        """
+        Wait until real ad cards appear. Retries consent dismissal if wall detected.
+        Returns True if ads loaded.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                text = self._driver.execute_script(
+                    "return document.body ? document.body.innerText : '';"
+                ) or ""
+
+                if any(x in text for x in [
+                    "Started running", "running on", "Active since",
+                    "ads use this creative", "See ad details",
+                    "library result", "results for",
+                ]):
+                    return True
+
+                # Still showing consent wall — try again
+                if any(x in text.lower() for x in [
+                    "allow all cookies", "accept all", "before you continue",
+                    "cookie", "privacy policy",
+                ]):
+                    logger.debug("  Consent wall detected mid-wait, retrying dismiss...")
+                    self._try_dismiss()
+
+            except Exception:
+                pass
+            time.sleep(1.5)
+
+        # Log what's on the page to help diagnose
+        try:
+            text = self._driver.execute_script(
+                "return (document.body ? document.body.innerText : '').slice(0, 400);"
+            ) or ""
+            logger.warning(f"  No ads loaded after {timeout}s. Page shows: {text[:200]!r}")
+        except Exception:
+            pass
+        return False
 
     def search_keyword(self, keyword: str, max_ads: int = 120) -> list[dict]:
         country = self.countries[0] if self.countries else "US"
@@ -281,11 +430,10 @@ class AdsLibraryBrowser:
             self._driver.get(url)
             time.sleep(PAGE_LOAD_WAIT)
             self._dismiss_dialogs()
-            time.sleep(1)
 
-            # Wait for actual ad cards — retries consent dismissal if wall still up
-            if not self._wait_for_ads(timeout=15):
-                logger.debug(f"  No ads loaded for '{keyword}' (consent wall or empty results)")
+            if not self._wait_for_ads(timeout=20):
+                logger.warning(f"  Skipping '{keyword}' — page never loaded ads")
+                return []
 
             title = self._driver.title
             logger.debug(f"  Page title: {title}")
@@ -297,15 +445,14 @@ class AdsLibraryBrowser:
                 try:
                     raw = self._driver.execute_script(_EXTRACT_JS) or []
                 except WebDriverException as js_err:
-                    logger.debug(f"  JS error on scroll {scroll_n} (skipping): {str(js_err)[:80]}")
+                    logger.debug(f"  JS error scroll {scroll_n}: {str(js_err)[:80]}")
                     self._driver.execute_script("window.scrollBy(0, window.innerHeight * 2.5);")
                     time.sleep(SCROLL_DELAY)
                     continue
 
-                # Check for JS-level errors
                 for item in raw:
                     if "_error" in item:
-                        logger.warning(f"  JS reported: {item['_error']}")
+                        logger.warning(f"  JS: {item['_error']}")
 
                 added = 0
                 for ad in raw:
@@ -320,7 +467,6 @@ class AdsLibraryBrowser:
                 if added == 0:
                     no_new_rounds += 1
                     if no_new_rounds >= 3:
-                        logger.debug(f"  No new ads after 3 scrolls — stopping")
                         break
                 else:
                     no_new_rounds = 0
@@ -332,17 +478,12 @@ class AdsLibraryBrowser:
                 time.sleep(SCROLL_DELAY)
 
         except WebDriverException as e:
-            logger.warning(f"  Browser error scraping '{keyword}': {e.msg[:200] if hasattr(e,'msg') else str(e)[:200]}")
+            logger.warning(f"  Browser error '{keyword}': {e.msg[:200] if hasattr(e,'msg') else str(e)[:200]}")
 
         logger.info(f"  Scraped {len(all_ads)} ads for '{keyword}'")
         return all_ads
 
     def get_page_ads(self, page_id: str, max_ads: int = 200) -> tuple[int, list[dict]]:
-        """
-        Visit a page's own Ads Library view.
-        Returns (follower_count, ads_list).
-        Follower count is extracted from the page header shown on this view.
-        """
         country = self.countries[0] if self.countries else "US"
         if page_id.isdigit():
             url = ADS_LIBRARY_BASE + "?" + urlencode({
@@ -371,8 +512,7 @@ class AdsLibraryBrowser:
             self._dismiss_dialogs()
             self._wait_for_ads(timeout=12)
 
-            # Extract follower count from the page header.
-            # Retry a few times since the header renders after the main content.
+            # Extract follower count — retry a few times for header to render
             for _attempt in range(4):
                 try:
                     follower_text = self._driver.execute_script(r"""
@@ -382,7 +522,7 @@ class AdsLibraryBrowser:
                     """) or ""
                     if follower_text:
                         follower_count = parse_follower_count(follower_text)
-                        logger.debug(f"  Followers for {page_id}: {follower_text} → {follower_count}")
+                        logger.debug(f"  Followers {page_id}: {follower_text} → {follower_count}")
                         break
                     time.sleep(1.5)
                 except Exception:
@@ -419,16 +559,11 @@ class AdsLibraryBrowser:
                 time.sleep(2.0)
 
         except WebDriverException as e:
-            logger.debug(f"  get_page_ads error for {page_id}: {str(e)[:100]}")
+            logger.debug(f"  get_page_ads error {page_id}: {str(e)[:100]}")
 
         return follower_count, all_ads
 
     def check_shopify_via_browser(self, url: str) -> tuple[bool, str]:
-        """
-        Navigate to the actual store URL and check the live page source for
-        Shopify signals. Returns (is_shopify: bool, reason: str).
-        Always navigates back to the previous Ads Library page when done.
-        """
         from .shopify import decode_facebook_redirect, _SHOPIFY_HTML_PATTERNS
         if not url or not self._driver:
             return False, "no url"
@@ -454,9 +589,7 @@ class AdsLibraryBrowser:
             return False, "browser: no shopify signals"
 
         except WebDriverException as e:
-            msg = e.msg[:100] if hasattr(e, "msg") else str(e)[:100]
-            logger.debug(f"check_shopify_via_browser error: {msg}")
-            return False, f"browser error"
+            return False, "browser error"
 
         finally:
             try:
@@ -464,103 +597,3 @@ class AdsLibraryBrowser:
                 time.sleep(1.5)
             except Exception:
                 pass
-
-    def _dismiss_dialogs(self):
-        """
-        Dismiss cookie consent / GDPR dialogs that block ad content.
-        Tries multiple strategies since Facebook's consent UI varies by region.
-        """
-        consent_texts = [
-            "Allow all cookies",
-            "Accept all",
-            "Allow essential and optional cookies",
-            "Only allow essential cookies",
-            "Decline optional cookies",
-            "Accept All",
-            "Allow All",
-            "OK",
-            "Got it",
-            "I Accept",
-            "Continue",
-            "Allow cookies",
-        ]
-
-        # Strategy 1: find button by visible text (most reliable)
-        for text in consent_texts:
-            try:
-                btns = self._driver.find_elements(
-                    By.XPATH,
-                    f"//button[normalize-space(.)='{text}' or contains(.,'{text}')]"
-                )
-                for btn in btns:
-                    if btn.is_displayed():
-                        btn.click()
-                        logger.debug(f"  Dismissed dialog via button text: '{text}'")
-                        time.sleep(1.2)
-                        return
-            except Exception:
-                pass
-
-        # Strategy 2: look for the consent dialog by data-testid / aria roles
-        try:
-            btns = self._driver.find_elements(
-                By.XPATH,
-                "//div[@role='dialog']//button | //div[@data-testid='cookie-policy-dialog']//button"
-            )
-            for btn in btns:
-                if btn.is_displayed():
-                    btn.click()
-                    logger.debug("  Dismissed dialog via role=dialog button")
-                    time.sleep(1.2)
-                    return
-        except Exception:
-            pass
-
-        # Strategy 3: JavaScript click on any visible consent button
-        try:
-            self._driver.execute_script("""
-                var texts = ['Allow all cookies','Accept all','Accept All','Allow All',
-                             'Only allow essential cookies','Decline optional cookies','OK'];
-                var btns = document.querySelectorAll('button');
-                for (var i = 0; i < btns.length; i++) {
-                    var t = btns[i].innerText.trim();
-                    if (texts.indexOf(t) !== -1 && btns[i].offsetParent !== null) {
-                        btns[i].click();
-                        break;
-                    }
-                }
-            """)
-            time.sleep(1.0)
-        except Exception:
-            pass
-
-    def _wait_for_ads(self, timeout: int = 12) -> bool:
-        """
-        Wait until ad cards appear on the page.
-        Returns True if ads loaded, False if timeout or consent wall detected.
-        """
-        import time as _time
-        deadline = _time.time() + timeout
-        while _time.time() < deadline:
-            try:
-                # Check for ad card indicators in the page text
-                text = self._driver.execute_script(
-                    "return document.body ? document.body.innerText : '';"
-                ) or ""
-                # These strings appear when real ad results are loaded
-                if any(x in text for x in [
-                    "Started running", "running on", "Active since",
-                    "ads use this creative", "See ad details",
-                ]):
-                    return True
-                # Detect consent wall still showing
-                if any(x in text for x in [
-                    "Allow all cookies", "Accept all", "cookie",
-                    "Before you continue",
-                ]):
-                    self._dismiss_dialogs()
-            except Exception:
-                pass
-            _time.sleep(1.5)
-        return False
-
