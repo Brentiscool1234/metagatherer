@@ -211,7 +211,40 @@ return results;
 """
 
 
+_STEALTH_JS = """
+Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+Object.defineProperty(navigator, 'languages', {get: () => ['en-US','en']});
+window.chrome = {runtime: {}, loadTimes: function(){}, csi: function(){}, app: {}};
+const orig = navigator.permissions.query;
+navigator.permissions.query = (params) =>
+    params.name === 'notifications'
+        ? Promise.resolve({state: Notification.permission})
+        : orig(params);
+"""
+
+
 def _make_driver(headless: bool = False) -> webdriver.Chrome:
+    # Prefer undetected-chromedriver — patches Chrome binary fingerprints that
+    # Facebook's bot detection specifically checks.
+    try:
+        import undetected_chromedriver as uc
+        opts = uc.ChromeOptions()
+        if headless:
+            opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--window-size=1366,900")
+        opts.add_argument("--lang=en-US")
+        driver = uc.Chrome(options=opts, use_subprocess=True)
+        logger.info("Using undetected-chromedriver (stealth mode)")
+        return driver
+    except ImportError:
+        logger.debug("undetected-chromedriver not installed — using standard selenium")
+    except Exception as e:
+        logger.debug(f"undetected-chromedriver failed ({e}) — falling back to selenium")
+
+    # Fallback: regular Selenium with manual stealth patches
     opts = Options()
     if headless:
         opts.add_argument("--headless=new")
@@ -230,7 +263,7 @@ def _make_driver(headless: bool = False) -> webdriver.Chrome:
     driver = webdriver.Chrome(options=opts)
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
-        {"source": "Object.defineProperty(navigator,'webdriver',{get:()=>undefined})"},
+        {"source": _STEALTH_JS},
     )
     return driver
 
@@ -431,7 +464,15 @@ class AdsLibraryBrowser:
             time.sleep(PAGE_LOAD_WAIT)
             self._dismiss_dialogs()
 
-            if not self._wait_for_ads(timeout=20):
+            # Nudge-scroll: triggers React lazy-load without moving past results
+            try:
+                self._driver.execute_script("window.scrollBy(0, 400);")
+                time.sleep(0.4)
+                self._driver.execute_script("window.scrollBy(0, -400);")
+            except Exception:
+                pass
+
+            if not self._wait_for_ads(timeout=25):
                 logger.warning(f"  Skipping '{keyword}' — page never loaded ads")
                 return []
 
