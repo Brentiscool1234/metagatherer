@@ -229,6 +229,8 @@ def _make_driver(headless: bool = False) -> webdriver.Chrome:
     # Facebook's bot detection specifically checks.
     try:
         import undetected_chromedriver as uc
+        import sys, io
+
         opts = uc.ChromeOptions()
         if headless:
             opts.add_argument("--headless=new")
@@ -236,15 +238,24 @@ def _make_driver(headless: bool = False) -> webdriver.Chrome:
         opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--window-size=1366,900")
         opts.add_argument("--lang=en-US")
-        driver = uc.Chrome(options=opts, use_subprocess=True)
+
+        # Suppress uc's stdout progress bar (it uses \r which corrupts Rich output)
+        _old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            driver = uc.Chrome(options=opts)
+        finally:
+            sys.stdout = _old_stdout
+
         logger.info("Using undetected-chromedriver (stealth mode)")
         return driver
     except ImportError:
-        logger.debug("undetected-chromedriver not installed — using standard selenium")
+        logger.warning("undetected-chromedriver not installed — pip install undetected-chromedriver")
     except Exception as e:
-        logger.debug(f"undetected-chromedriver failed ({e}) — falling back to selenium")
+        logger.warning(f"undetected-chromedriver failed: {e!s:.120} — falling back to standard selenium")
 
     # Fallback: regular Selenium with manual stealth patches
+    logger.info("Using standard selenium (bot detection may block results)")
     opts = Options()
     if headless:
         opts.add_argument("--headless=new")
