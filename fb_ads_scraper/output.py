@@ -102,6 +102,23 @@ def print_results_table(products: list[WinningProduct], days: int):
     console.print()
 
 
+def _ads_library_url(page_id: str, country: str = "US") -> str:
+    """Build a direct link to all active ads for this page in the Ads Library."""
+    from urllib.parse import urlencode
+    if page_id and page_id.isdigit():
+        params = {
+            "active_status": "active", "ad_type": "all",
+            "country": country, "search_type": "page",
+            "view_all_page_id": page_id,
+        }
+    else:
+        params = {
+            "active_status": "active", "ad_type": "all",
+            "country": country, "q": page_id, "search_type": "page",
+        }
+    return "https://www.facebook.com/ads/library/?" + urlencode(params)
+
+
 def _render_table(products: list[WinningProduct], show_rank: bool):
     table = Table(box=box.ROUNDED, show_lines=True, expand=True)
 
@@ -112,9 +129,9 @@ def _render_table(products: list[WinningProduct], show_rank: bool):
     table.add_column("Ads", justify="center", width=5)
     table.add_column("Followers", justify="right", width=11)
     table.add_column("Vid", justify="center", width=4)
-    table.add_column("CTA", justify="center", width=4)
     table.add_column("Shopify", justify="center", width=8)
     table.add_column("Store URL", min_width=22, overflow="fold")
+    table.add_column("Ad Library", min_width=12, overflow="fold")
 
     for i, w in enumerate(products, 1):
         score = getattr(w, "score", 0.0)
@@ -140,11 +157,14 @@ def _render_table(products: list[WinningProduct], show_rank: bool):
         if len(store) > 40:
             store = store[:37] + "..."
 
-        page_display = f"[link={w.page_url}]{w.page_name}[/link]"
+        lib_url = _ads_library_url(w.page_id)
+        lib_link = f"[cyan][link={lib_url}]View ads ↗[/link][/cyan]"
+
+        page_display = f"[link={w.page_url}]{w.page_name}[/link]" if w.page_url else w.page_name
 
         row = [page_display, bar, ad_str, fol_str,
-               _bool_icon(w.is_video), _bool_icon(w.has_shop_now),
-               shopify_icon, store]
+               _bool_icon(w.is_video),
+               shopify_icon, store, lib_link]
         if show_rank:
             row = [str(i)] + row
         table.add_row(*row)
@@ -162,12 +182,18 @@ def _print_detail_card(w: WinningProduct, rank: int):
         else "✓ (HTTP headers)" if w.is_shopify \
         else f"✗  ({w.shopify_reason})"
 
+    lib_url = _ads_library_url(w.page_id)
+    snapshot = getattr(w, "sample_snapshot_url", "") or ""
+
     lines = [
         f"[bold]{_score_bar(score)}[/bold]",
         f"[dim]{'─' * 50}[/dim]",
         f"[bold]Page:[/bold]      {w.page_name}  •  {fol_str} followers",
-        f"[bold]Page URL:[/bold]  [cyan]{w.page_url or '—'}[/cyan]",
-        f"[bold]Store URL:[/bold] [cyan]{store}[/cyan]",
+        f"[bold]Page URL:[/bold]  [cyan][link={w.page_url}]{w.page_url or '—'}[/link][/cyan]",
+        f"[bold]Store URL:[/bold] [cyan][link={store}]{store}[/link][/cyan]",
+        f"[bold]All ads ↗:[/bold] [cyan][link={lib_url}]{lib_url}[/link][/cyan]",
+        (f"[bold]Ad snap ↗:[/bold] [cyan][link={snapshot}]{snapshot[:80]}[/link][/cyan]"
+         if snapshot else ""),
         f"[bold]Ads:[/bold]       {w.ad_count} active  (total on page: {w.total_page_ads})",
         f"[bold]Shopify:[/bold]   {shopify_str}",
         f"[bold]Platforms:[/bold] {', '.join(w.publisher_platforms) or '—'}",
@@ -179,6 +205,7 @@ def _print_detail_card(w: WinningProduct, rank: int):
         "",
         f"[dim]Sample ad:[/dim] {(w.sample_ad_body or '—')[:200]}",
     ]
+    lines = [l for l in lines if l]  # drop empty optional lines
     console.print(Panel(
         "\n".join(lines),
         title=f"[bold]#{rank} — {w.page_name}[/bold]",

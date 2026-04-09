@@ -113,14 +113,61 @@ _NICHE_ALIASES: dict[str, str] = {
 }
 
 
+# Maximum product price — ads mentioning prices above this are filtered out
+MAX_PRODUCT_PRICE = 250
+
+# Food-related signals in ad copy — human food products are not dropshippable
+_FOOD_SIGNALS = {
+    "calories", "nutrition facts", "per serving", "serving size",
+    "ingredients:", "tablespoon", "teaspoon", "bake at", "preheat oven",
+    "hellofresh", "hungryroot", "freshly", "everyplate", "blue apron",
+    "sunbasket", "meal kit", "meal plan", "food delivery",
+    "order food", "dinner delivery", "lunch delivery",
+    "snack subscription", "grocery delivery",
+    "restaurant", "dine in", "takeout", "take-out", "catering",
+    "coffee subscription", "wine subscription", "beer subscription",
+}
+
+# Chemical / hazardous product signals — not suitable for dropshipping
+_CHEMICAL_SIGNALS = {
+    "bleach", "ammonia", "chlorine", "hydrochloric", "sulfuric acid",
+    "pesticide", "herbicide", "insecticide", "fungicide", "rodenticide",
+    "weed killer", "bug killer", "rat poison", "disinfectant concentrate",
+    "industrial cleaner", "solvent", "chemical formula",
+}
+
+import re as _re
+_PRICE_RE = _re.compile(r'\$\s*([\d,]+(?:\.\d{1,2})?)')
+
+
+def _min_price_in_text(text: str) -> float:
+    """Return the smallest dollar amount found in text, or 0 if none found."""
+    prices = []
+    for m in _PRICE_RE.finditer(text):
+        try:
+            val = float(m.group(1).replace(",", ""))
+            if 1 < val < 50_000:   # ignore $0 and absurd numbers
+                prices.append(val)
+        except ValueError:
+            pass
+    return min(prices) if prices else 0.0
+
+
 def _is_blocked(raw: dict) -> bool:
-    """Return True if this ad is from a supplier marketplace we want to skip."""
+    """Return True if this ad should be skipped (marketplace, food, chemicals)."""
     check = " ".join([
         (raw.get("page_name") or "").lower(),
         (raw.get("page_url") or "").lower(),
         (raw.get("ad_body") or "").lower(),
     ])
-    return any(term in check for term in _PLATFORM_BLOCKLIST)
+    if any(term in check for term in _PLATFORM_BLOCKLIST):
+        return True
+    body = (raw.get("ad_body") or "").lower()
+    if any(sig in body for sig in _FOOD_SIGNALS):
+        return True
+    if any(sig in body for sig in _CHEMICAL_SIGNALS):
+        return True
+    return False
 
 
 def _is_junk_page(page_name: str, page_id: str) -> bool:
@@ -298,6 +345,13 @@ class WinningProduct:
             "latest_ad_start": max(self.ad_start_dates) if self.ad_start_dates else "",
             "sample_ad_body": self.sample_ad_body,
             "snapshot_url": self.sample_snapshot_url,
+            "ads_library_url": (
+                f"https://www.facebook.com/ads/library/?active_status=active"
+                f"&ad_type=all&country=US&q={self.page_id}&search_type=page"
+                if not self.page_id.isdigit() else
+                f"https://www.facebook.com/ads/library/?active_status=active"
+                f"&ad_type=all&country=US&search_type=page&view_all_page_id={self.page_id}"
+            ),
             "publisher_platforms": ", ".join(self.publisher_platforms),
             "keywords_matched": ", ".join(self.keywords_matched),
         }
@@ -611,7 +665,8 @@ class FBAdsScraper:
         winners = []
         shopify_cache = shopify_cache or {}
         stats = {"total": 0, "blocked": 0, "junk": 0, "niche_miss": 0,
-                 "follower_range": 0, "no_recent": 0, "low_ads": 0, "no_cta": 0, "passed": 0}
+                 "follower_range": 0, "no_recent": 0, "low_ads": 0,
+                 "high_price": 0, "no_cta": 0, "passed": 0}
 
         for page_id, ads in self._page_ads.items():
             stats["total"] += 1
@@ -662,6 +717,18 @@ class FBAdsScraper:
                 if total_versions < self.min_ads:
                     logger.debug(f"  SKIP {page_id}: {total_versions} ad versions (need {self.min_ads})")
                     stats["low_ads"] += 1; continue
+
+                # Price filter — skip clusters where the product costs > $250
+                all_text = " ".join(
+                    b for a in cluster
+                    for b in (a.get("ad_creative_bodies") or [])
+                )
+                min_price = _min_price_in_text(all_text)
+                if min_price > MAX_PRODUCT_PRICE:
+                    logger.debug(
+                        f"  SKIP {page_id}: price ${min_price:.0f} > ${MAX_PRODUCT_PRICE}"
+                    )
+                    stats["high_price"] += 1; continue
 
                 shop_now = sum(
                     1 for a in cluster
@@ -764,6 +831,7 @@ class FBAdsScraper:
             f"Filter stats — total:{stats['total']} blocked:{stats['blocked']} "
             f"junk:{stats['junk']} niche_miss:{stats['niche_miss']} "
             f"follower_range:{stats['follower_range']} low_ads:{stats['low_ads']} "
+            f"high_price:{stats['high_price']} "
             f"no_cta:{stats['no_cta']} passed:{stats['passed']}"
         )
         true_winners = [w for w in winners if w.score >= WINNER_THRESHOLD]
