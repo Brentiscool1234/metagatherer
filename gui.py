@@ -14,6 +14,13 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, scrolledtext, ttk
 
+# Load .env into os.environ immediately so the AI expert can read the API key
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 # ── Colour palette ──────────────────────────────────────────────────────────
 BG       = "#1a1a2e"
 BG2      = "#16213e"
@@ -322,14 +329,8 @@ class App(tk.Tk):
         return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
     def _load_api_key(self) -> str:
-        try:
-            with open(self._env_path()) as f:
-                for line in f:
-                    line = line.strip()
-                    if line.startswith("ANTHROPIC_API_KEY="):
-                        return line.split("=", 1)[1].strip().strip('"').strip("'")
-        except FileNotFoundError:
-            pass
+        # os.environ is already populated by load_dotenv() at module level,
+        # so just return whatever is set (file or existing env var).
         return os.environ.get("ANTHROPIC_API_KEY", "")
 
     def _save_api_key(self):
