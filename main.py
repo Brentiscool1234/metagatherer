@@ -78,18 +78,23 @@ def _setup_logging(verbose: bool):
               help="Path to the persistent state file for resuming interrupted runs.")
 @click.option("--reset", is_flag=True, default=False,
               help="Ignore saved state and start a fresh scan from scratch.")
+@click.option("--tiktok/--no-tiktok", default=True, show_default=True,
+              help="Also scan TikTok for the same keywords (50k views, last 30 days).")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
 def main(
     countries, days, min_ads, min_followers, max_followers,
     niche, keywords, max_keywords, keyword_depth, max_ads_per_keyword,
     video_only, require_shop_now, headless, output, no_csv,
-    state_file, reset, verbose,
+    tiktok, state_file, reset, verbose,
 ):
     """MetaGatherer: Find winning ecommerce products in the Facebook Ads Library."""
     _setup_logging(verbose)
 
     from fb_ads_scraper.scraper import FBAdsScraper
-    from fb_ads_scraper.output import print_summary_banner, print_results_table, export_csv
+    from fb_ads_scraper.output import (
+        print_summary_banner, print_results_table, export_csv,
+        print_tiktok_results, export_tiktok_csv,
+    )
     from fb_ads_scraper.state import load_state, state_summary, DEFAULT_STATE_FILE
     import os
 
@@ -171,6 +176,23 @@ def main(
         if output is None:
             output = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         export_csv(exportable, output)
+
+    # ── TikTok scan ────────────────────────────────────────────────────────────
+    if tiktok:
+        console.rule("[bold magenta]TikTok Scan[/bold magenta]")
+        console.print(
+            f"  Scanning TikTok for [bold]{len(scraper._searched_keywords)}[/bold] "
+            f"keywords  •  ≥50k views  •  last 30 days\n"
+        )
+        from fb_ads_scraper.tiktok import run_tiktok_scan
+        tiktok_results = run_tiktok_scan(
+            keywords=scraper._searched_keywords,
+            headless=headless,
+        )
+        print_tiktok_results(tiktok_results)
+        if not no_csv and tiktok_results:
+            tt_path = (output or "results").replace(".csv", "") + "_tiktok.csv"
+            export_tiktok_csv(tiktok_results, tt_path)
 
 
 if __name__ == "__main__":

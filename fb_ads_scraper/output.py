@@ -215,6 +215,66 @@ def _print_detail_card(w: WinningProduct, rank: int):
     console.print()
 
 
+def print_tiktok_results(results):
+    """Print TikTok results table."""
+    if not results:
+        console.print("\n[yellow]No TikTok videos found matching the criteria.[/yellow]\n")
+        return
+
+    console.print()
+    console.rule(
+        f"[bold magenta]  TIKTOK RESULTS  "
+        f"({len(results)} videos ≥ 50k views, last 30 days)  [/bold magenta]"
+    )
+
+    table = Table(box=box.ROUNDED, show_lines=True, expand=True)
+    table.add_column("#", style="dim", width=3, justify="right")
+    table.add_column("Views", justify="right", min_width=8)
+    table.add_column("@Creator", min_width=14)
+    table.add_column("Shopify", justify="center", width=8)
+    table.add_column("Store URL", min_width=22, overflow="fold")
+    table.add_column("Video Link", min_width=20, overflow="fold")
+    table.add_column("Caption", min_width=20, overflow="fold")
+
+    for i, r in enumerate(results, 1):
+        views_str = f"[bright_green]{r.views_text}[/bright_green]"
+        shopify_icon = (
+            "[bright_green]✓[/bright_green]" if r.is_shopify else "[dim]✗[/dim]"
+        )
+        bio = r.bio_url or "—"
+        if len(bio) > 35:
+            bio = bio[:32] + "..."
+
+        vid_link = f"[cyan][link={r.video_url}]{r.video_url.split('/')[-1]}…[/link][/cyan]"
+        caption = (r.caption or "—")[:60]
+
+        table.add_row(
+            str(i), views_str,
+            f"@{r.username}" if r.username else "—",
+            shopify_icon, bio, vid_link, caption,
+        )
+
+    console.print(table)
+    console.print()
+
+
+def export_tiktok_csv(results, path: str):
+    """Export TikTok results to CSV."""
+    if not results:
+        return
+    import csv as _csv
+    fieldnames = [
+        "views", "views_text", "username", "keyword", "upload_date",
+        "video_url", "bio_url", "is_shopify", "shopify_reason", "caption",
+    ]
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        w = _csv.DictWriter(f, fieldnames=fieldnames)
+        w.writeheader()
+        for r in results:
+            w.writerow({k: getattr(r, k, "") for k in fieldnames})
+    console.print(f"[bold green]✓ TikTok results:[/bold green] [cyan]{path}[/cyan]\n")
+
+
 def export_csv(products: list[WinningProduct], path: str):
     if not products:
         console.print("[yellow]No results to export.[/yellow]")
