@@ -121,6 +121,32 @@ def is_shopify_store(url: str, timeout: int = 8) -> tuple[bool, str]:
         return False, f"request error: {e}"
 
 
+def batch_check_shopify(
+    urls: set,
+    workers: int = 12,
+) -> dict:
+    """
+    Check many store URLs for Shopify in parallel using HTTP.
+    Returns {url: (is_shopify, reason)}.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    results: dict = {}
+    if not urls:
+        return results
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        future_to_url = {pool.submit(is_shopify_store, url): url for url in urls if url}
+        for future in as_completed(future_to_url):
+            url = future_to_url[future]
+            try:
+                results[url] = future.result()
+            except Exception as exc:
+                results[url] = (False, f"error: {exc}")
+
+    return results
+
+
 def extract_url_from_ad(ad: dict) -> str:
     """
     Try to pull a destination URL from an ad dict.

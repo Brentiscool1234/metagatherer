@@ -564,13 +564,23 @@ class AdsLibraryBrowser:
             self._dismiss_dialogs()
             self._wait_for_ads(timeout=12)
 
-            # Extract follower count — retry a few times for header to render
+            # Extract follower count — retry a few times for header to render.
+            # The Ads Library page sometimes shows it in the advertiser header.
             for _attempt in range(4):
                 try:
                     follower_text = self._driver.execute_script(r"""
                         var t = document.body.innerText || '';
-                        var m = t.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i);
-                        return m ? m[0] : '';
+                        // Multiple patterns Facebook uses for follower display
+                        var patterns = [
+                            /([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i,
+                            /followers?\s*[:\u00b7\u2022]?\s*([\d][\d,\.]*\s*[KkMm]?)/i,
+                            /([\d][\d,\.]*\s*[KkMm]?)\s*(?:people follow)/i
+                        ];
+                        for (var i = 0; i < patterns.length; i++) {
+                            var m = t.match(patterns[i]);
+                            if (m) return m[0];
+                        }
+                        return '';
                     """) or ""
                     if follower_text:
                         follower_count = parse_follower_count(follower_text)
@@ -579,6 +589,26 @@ class AdsLibraryBrowser:
                     time.sleep(1.5)
                 except Exception:
                     break
+
+            # If still 0, try the actual Facebook page (shows follower count prominently)
+            if follower_count == 0 and not page_id.isdigit():
+                try:
+                    prev_url = self._driver.current_url
+                    self._driver.get(f"https://www.facebook.com/{page_id}")
+                    time.sleep(3)
+                    follower_text = self._driver.execute_script(r"""
+                        var t = document.body.innerText || '';
+                        var m = t.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|people follow)/i);
+                        return m ? m[0] : '';
+                    """) or ""
+                    if follower_text:
+                        follower_count = parse_follower_count(follower_text)
+                        logger.debug(f"  Followers (fb page) {page_id}: {follower_text} → {follower_count}")
+                    # Navigate back to the Ads Library page we were on
+                    self._driver.get(prev_url)
+                    time.sleep(PAGE_LOAD_WAIT)
+                except Exception:
+                    pass
 
             no_new = 0
             for _ in range(15):

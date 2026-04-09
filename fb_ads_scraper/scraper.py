@@ -54,6 +54,62 @@ _KNOWN_BIG_BRANDS = {
     "casper", "purple mattress", "saatva",
     "indeed", "linkedin", "ziprecruiter",
     "chewy", "petco", "petsmart",
+    # Retail / food chains
+    "lowe's", "lowes", "home depot", "homedepot", "best buy", "bestbuy",
+    "kroger", "safeway", "whole foods", "wholefoods", "trader joe",
+    "kohl's", "kohls", "nordstrom", "macy's", "macys", "gap", "old navy",
+    "old navy", "h&m", "zara", "forever 21", "forever21",
+    "domino's", "dominoes", "pizza hut", "pizzahut", "kfc", "chick-fil-a",
+    "chipotle", "panera", "panda express", "panera bread",
+    "dunkin", "krispy kreme", "popeyes",
+    # Media / services
+    "hulu", "disney", "disney+", "hbo", "peacock", "amazon prime",
+    "new york times", "nytimes", "washington post", "wapo",
+    "nothing bundt cakes", "nothingbundtcakes",
+    "booker prize", "booker prizes",
+    "anaconda", "anaconda distribution",  # software company
+    "hello nancy", "hellonancy",
+    # Insurance / finance
+    "aetna", "cigna", "humana", "unitedhealth", "anthem",
+    "vanguard", "schwab", "fidelity", "td ameritrade",
+    # Automotive
+    "toyota", "honda", "ford", "chevrolet", "chevy", "bmw", "mercedes",
+    "hyundai", "kia", "nissan", "tesla", "dodge", "chrysler",
+}
+
+# Maps user-supplied niche words → canonical NICHE_SEED_MAP / NICHE_TERMS key
+_NICHE_ALIASES: dict[str, str] = {
+    # pet
+    "dog": "pet", "dogs": "pet", "cat": "pet", "cats": "pet",
+    "pets": "pet", "puppy": "pet", "puppies": "pet",
+    "kitten": "pet", "kittens": "pet", "animal": "pet", "animals": "pet",
+    "canine": "pet", "feline": "pet",
+    # fitness
+    "gym": "fitness", "workout": "fitness", "sport": "fitness",
+    "sports": "fitness", "exercise": "fitness", "weightloss": "fitness",
+    "weight loss": "fitness", "yoga": "fitness", "pilates": "fitness",
+    # kitchen
+    "cooking": "kitchen", "baking": "kitchen", "chef": "kitchen",
+    "cook": "kitchen", "recipe": "kitchen",
+    # beauty
+    "skincare": "beauty", "makeup": "beauty", "cosmetic": "beauty",
+    "cosmetics": "beauty", "haircare": "beauty", "nails": "beauty",
+    # home
+    "house": "home", "bedroom": "home", "decor": "home",
+    "interior": "home", "furniture": "home", "cleaning": "home",
+    # tech
+    "gadget": "tech", "gadgets": "tech", "electronics": "tech",
+    "phone": "tech", "computer": "tech",
+    # jewelry
+    "accessories": "jewelry", "fashion": "jewelry", "jewellery": "jewelry",
+    # baby
+    "kids": "baby", "infant": "baby", "toddler": "baby",
+    "children": "baby", "child": "baby", "newborn": "baby",
+    # outdoor
+    "camping": "outdoor", "hiking": "outdoor", "garden": "outdoor",
+    "gardening": "outdoor", "hunting": "outdoor", "fishing": "outdoor",
+    # car
+    "vehicle": "car", "auto": "car", "truck": "car", "automotive": "car",
 }
 
 
@@ -70,9 +126,12 @@ def _is_blocked(raw: dict) -> bool:
 def _is_junk_page(page_name: str, page_id: str) -> bool:
     """Return True if this page is a login-wall artifact or known big brand."""
     name = (page_name or "").lower().strip()
+    pid = (page_id or "").lower().replace(".", " ").strip()
     if name in _JUNK_PAGE_NAMES:
         return True
-    if any(brand in name for brand in _KNOWN_BIG_BRANDS):
+    # Check both page name and page ID slug against brand set
+    combined = name + " " + pid
+    if any(brand in combined for brand in _KNOWN_BIG_BRANDS):
         return True
     # Numeric-only page IDs with generic names are often login artifacts
     if name in ("log in", "") and page_id.isdigit():
@@ -334,11 +393,25 @@ class FBAdsScraper:
                 if niche_seeds:
                     logger.info(f"Niche '{self.niche}' → built-in seed keywords")
                 else:
-                    logger.warning(
-                        f"No built-in seeds for niche '{self.niche}' — "
-                        f"using generic seeds. Set ANTHROPIC_API_KEY for AI seeds."
+                    # Try alias map: "dogs"→"pet", "gym"→"fitness", etc.
+                    words = niche_lower.split()
+                    alias_key = next(
+                        (_NICHE_ALIASES[w] for w in words if w in _NICHE_ALIASES),
+                        None,
                     )
-                    niche_seeds = []
+                    if alias_key:
+                        niche_seeds = NICHE_SEED_MAP.get(alias_key, [])
+                        if niche_seeds:
+                            logger.info(
+                                f"Niche '{self.niche}' → alias '{alias_key}' "
+                                f"seed keywords"
+                            )
+                    if not niche_seeds:
+                        logger.warning(
+                            f"No built-in seeds for niche '{self.niche}' — "
+                            f"using generic seeds. Set ANTHROPIC_API_KEY for AI seeds."
+                        )
+                        niche_seeds = []
 
             # Niche seeds first, then generic safety seeds (deduped)
             seen = set(niche_seeds)
@@ -404,9 +477,10 @@ class FBAdsScraper:
                         if pname:
                             all_page_names_for_ai.append(pname)
 
-                if depth < self.max_keyword_depth and new_ads:
-                    # Try AI expansion first, fall back to frequency-based
-                    if self.use_ai and all_bodies_for_ai:
+                if depth < self.max_keyword_depth and new_ads and self.use_ai:
+                    # AI-only expansion — frequency-based picks generic ad-copy
+                    # words ("luxury", "delivery") that are useless for dropshipping
+                    if all_bodies_for_ai:
                         ai_kws = expand_keywords_with_ai(
                             all_bodies_for_ai[-60:],  # recent bodies
                             self._searched_keywords,
@@ -418,13 +492,7 @@ class FBAdsScraper:
                                 queue.append((kw, depth + 1))
                         if ai_kws:
                             save_state(self.state_file, self._snapshot_state(queue))
-                            continue  # skip frequency-based if AI gave us something
-
-                    # Frequency-based fallback
-                    freq_kws = extract_new_keywords(new_ads, self._searched_keywords, max_new=6)
-                    for kw in freq_kws:
-                        if kw not in self._searched_keywords:
-                            queue.append((kw, depth + 1))
+                            continue
 
                 # Save after every keyword so interruptions are resumable
                 save_state(self.state_file, self._snapshot_state(queue))
@@ -486,9 +554,32 @@ class FBAdsScraper:
         except KeyboardInterrupt:
             logger.warning("Interrupted — evaluating partial results...")
 
+        # Pre-check all CTA URLs for Shopify in parallel (HTTP, no browser needed)
+        shopify_cache: dict[str, tuple[bool, str]] = {}
+        try:
+            from .shopify import batch_check_shopify, decode_facebook_redirect as _dfr
+            all_real_urls: set[str] = set()
+            for _ads in self._page_ads.values():
+                for _ad in _ads:
+                    cta = _ad.get("_cta_url", "")
+                    if cta:
+                        real = _dfr(cta)
+                        if real and real.startswith("http"):
+                            all_real_urls.add(real)
+            if all_real_urls:
+                logger.info(
+                    f"Pre-checking {len(all_real_urls)} store URLs for Shopify "
+                    f"(multithreaded HTTP)..."
+                )
+                shopify_cache = batch_check_shopify(all_real_urls)
+                confirmed = sum(1 for v in shopify_cache.values() if v[0])
+                logger.info(f"  Shopify confirmed: {confirmed}/{len(all_real_urls)}")
+        except Exception as e:
+            logger.debug(f"Shopify pre-check failed: {e}")
+
         # Evaluate with browser still alive so it can visit store URLs
         try:
-            results = self._evaluate_pages(browser)
+            results = self._evaluate_pages(browser, shopify_cache=shopify_cache)
         finally:
             browser.stop()
 
@@ -498,8 +589,11 @@ class FBAdsScraper:
         counts = [a["_follower_count"] for a in ads if a.get("_follower_count", 0) > 0]
         return int(sum(counts) / len(counts)) if counts else 0
 
-    def _evaluate_pages(self, browser=None) -> list[WinningProduct]:
+    def _evaluate_pages(
+        self, browser=None, shopify_cache: dict = None
+    ) -> list[WinningProduct]:
         winners = []
+        shopify_cache = shopify_cache or {}
         stats = {"total": 0, "blocked": 0, "junk": 0, "niche_miss": 0,
                  "follower_range": 0, "no_recent": 0, "low_ads": 0, "no_cta": 0, "passed": 0}
 
@@ -508,7 +602,15 @@ class FBAdsScraper:
             # Filter blocklisted platforms — catches entries loaded from old state files
             if any(term in page_id.lower() for term in _PLATFORM_BLOCKLIST):
                 stats["blocked"] += 1; continue
-            page_name = (ads[0].get("page_name") or "") if ads else ""
+
+            # Find the best page_name: skip junk names like "Log in" from login wall
+            page_name = ""
+            for _ad in ads:
+                _n = (_ad.get("page_name") or "").strip()
+                if _n and _n.lower() not in _JUNK_PAGE_NAMES:
+                    page_name = _n
+                    break
+
             if any(term in page_name.lower() for term in _PLATFORM_BLOCKLIST):
                 stats["blocked"] += 1; continue
             # Filter login-wall artifacts and known big brands
@@ -566,25 +668,27 @@ class FBAdsScraper:
 
                 # Get the real store URL from CTA buttons (unwrap l.php if needed)
                 from .shopify import decode_facebook_redirect
+                # Collect ALL cta_urls in this cluster — use the first valid one
                 cta_url = next(
                     (a.get("_cta_url", "") for a in cluster if a.get("_cta_url")), ""
                 )
                 store_url = decode_facebook_redirect(cta_url) if cta_url else ""
 
-                # Step 1: fast HTTP-based check
+                # Step 1: look up pre-checked cache (multithreaded HTTP done earlier)
                 is_shopify, shopify_reason = False, "no url"
-                check_url = store_url or page_url
-                if check_url:
-                    is_shopify, shopify_reason = is_shopify_store(check_url)
+                if store_url and store_url in shopify_cache:
+                    is_shopify, shopify_reason = shopify_cache[store_url]
+                elif store_url:
+                    # Not in cache (shouldn't happen often) — check inline
+                    is_shopify, shopify_reason = is_shopify_store(store_url)
 
-                # Step 2: browser-based fallback — actually visit the store
+                # Step 2: browser-based fallback — visit the actual store URL
                 shopify_via_browser = False
-                if browser and cta_url:
-                    if not is_shopify:
-                        is_shopify, shopify_reason = browser.check_shopify_via_browser(cta_url)
-                        shopify_via_browser = is_shopify
-                    else:
-                        shopify_via_browser = True  # already confirmed, no need to revisit
+                if browser and cta_url and not is_shopify:
+                    is_shopify, shopify_reason = browser.check_shopify_via_browser(cta_url)
+                    shopify_via_browser = is_shopify
+                elif is_shopify:
+                    shopify_via_browser = False  # confirmed via HTTP, not browser
 
                 start_dates = sorted(
                     {a["_start_date"] for a in cluster if a.get("_start_date")}
