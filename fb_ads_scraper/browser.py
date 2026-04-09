@@ -249,10 +249,10 @@ def _make_driver(headless: bool = False) -> webdriver.Chrome:
 
         logger.info("Using undetected-chromedriver (stealth mode)")
         return driver
-    except ImportError:
-        logger.warning("undetected-chromedriver not installed — pip install undetected-chromedriver")
+    except ImportError as e:
+        logger.warning(f"undetected-chromedriver import error: {e} — pip install undetected-chromedriver")
     except Exception as e:
-        logger.warning(f"undetected-chromedriver failed: {e!s:.120} — falling back to standard selenium")
+        logger.warning(f"undetected-chromedriver failed: {type(e).__name__}: {e!s:.200}")
 
     # Fallback: regular Selenium with manual stealth patches
     logger.info("Using standard selenium (bot detection may block results)")
