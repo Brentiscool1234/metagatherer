@@ -82,15 +82,29 @@ def _setup_logging(verbose: bool):
               help="Run the Facebook Ads Library scan.")
 @click.option("--tiktok/--no-tiktok", default=True, show_default=True,
               help="Also scan TikTok for the same keywords (50k views, last 30 days).")
+@click.option("--tiktok-login", is_flag=True, default=False,
+              help="Open a browser to log in to TikTok and save session cookies, then exit.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
 def main(
     countries, days, min_ads, min_followers, max_followers,
     niche, keywords, max_keywords, keyword_depth, max_ads_per_keyword,
     video_only, require_shop_now, headless, output, no_csv,
-    facebook, tiktok, state_file, reset, verbose,
+    facebook, tiktok, tiktok_login, state_file, reset, verbose,
 ):
     """MetaGatherer: Find winning ecommerce products in the Facebook Ads Library."""
     _setup_logging(verbose)
+
+    # ── TikTok login flow (standalone, exits after saving cookies) ─────────────
+    if tiktok_login:
+        console.rule("[bold magenta]TikTok Login[/bold magenta]")
+        console.print(
+            "  A Chrome window will open. Log in to TikTok in that window.\n"
+            "  Your session will be saved to [cyan]tiktok_cookies.json[/cyan] "
+            "and reused on future scans.\n"
+        )
+        from fb_ads_scraper.tiktok import do_tiktok_login
+        do_tiktok_login(headless=False)
+        return
 
     from fb_ads_scraper.scraper import FBAdsScraper
     from fb_ads_scraper.output import (

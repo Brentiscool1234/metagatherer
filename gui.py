@@ -86,6 +86,13 @@ class App(tk.Tk):
         self._check(left, "Facebook Ads Library", self.v_facebook)
         self._check(left, "TikTok (50k views / 30 days)", self.v_tiktok)
 
+        tk.Button(
+            left, text="🔑  TikTok Login",
+            font=FONT, bg=BG3, fg=FG,
+            activebackground=ACCENT2, bd=0, pady=4, cursor="hand2",
+            command=self._tiktok_login,
+        ).pack(fill="x", pady=(4, 0))
+
         self._section(left, "Search")
         self.v_niche    = self._row_entry(left, "Niche", "e.g. dogs, fitness, jewelry")
         self.v_keywords = self._row_entry(left, "Extra keywords", "comma-separated")
@@ -249,6 +256,44 @@ class App(tk.Tk):
         self._running = False
         self.btn.config(text="▶  START SCAN", bg=ACCENT)
         self.status_var.set("Stopping…")
+
+    def _tiktok_login(self):
+        """Run --tiktok-login in a background thread (opens browser for manual login)."""
+        if self._running:
+            self._append("WARNING", "Stop the current scan before logging in.\n")
+            return
+        self._append("DIM", "Opening TikTok login browser — log in, then close or wait.\n")
+        self.status_var.set("TikTok login…")
+        threading.Thread(target=self._run_tiktok_login_proc, daemon=True).start()
+
+    def _run_tiktok_login_proc(self):
+        py  = sys.executable
+        cmd = [py, os.path.join(os.path.dirname(__file__), "main.py"), "--tiktok-login"]
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        try:
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                bufsize=1,
+                cwd=os.path.dirname(__file__),
+                env=env,
+            )
+            for line in proc.stdout:
+                self._classify_and_append(line)
+            proc.wait()
+            if proc.returncode == 0:
+                self._append("SUCCESS", "\nTikTok session saved — you can now run a scan.\n")
+            else:
+                self._append("WARNING", f"\nTikTok login exited with code {proc.returncode}.\n")
+        except Exception as exc:
+            self._append("ERROR", f"\nFailed to start TikTok login: {exc}\n")
+        finally:
+            self.after(0, lambda: self.status_var.set("Ready"))
 
     def _run_scan(self):
         """Build the command and run it as a subprocess, streaming output."""

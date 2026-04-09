@@ -5,11 +5,13 @@ Searches TikTok's public search for each keyword discovered during the
 Facebook scan.  Filters for videos with ≥ 50 k views uploaded in the last
 30 days, then checks whether the creator's bio contains a Shopify store.
 
-No login required.  Uses the same undetected-chromedriver setup as the
-Facebook browser so bot-detection evasion is inherited automatically.
+Session cookies are saved to tiktok_cookies.json after a successful login
+so subsequent runs skip the login step automatically.
 """
 
+import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
@@ -27,6 +29,8 @@ DAYS_LOOKBACK  = 30
 MAX_VIDEOS_PER_KEYWORD = 20   # stop after this many qualifying videos
 SCROLL_ROUNDS  = 6            # scrolls to load more results per keyword
 PAGE_LOAD_WAIT = 5            # seconds after navigation
+LOGIN_WAIT_SECS = 300         # 5 minutes max wait for manual login
+TIKTOK_COOKIES_FILE = "tiktok_cookies.json"
 
 
 # ── Data class ────────────────────────────────────────────────────────────────
@@ -170,15 +174,98 @@ class TikTokScraper:
         from .browser import _make_driver
         logger.info("Starting TikTok browser...")
         self._driver = _make_driver(headless=self.headless)
+        # Navigate to TikTok first so the domain is set before loading cookies
+        self._driver.get("https://www.tiktok.com")
+        time.sleep(2)
+        self._load_cookies()
         logger.info("TikTok browser ready.")
 
     def stop(self):
         if self._driver:
             try:
+                self._save_cookies()
                 self._driver.quit()
             except Exception:
                 pass
         logger.info("TikTok browser closed.")
+
+    # ── Cookie persistence ────────────────────────────────────────────────────
+
+    def _save_cookies(self):
+        try:
+            cookies = self._driver.get_cookies()
+            with open(TIKTOK_COOKIES_FILE, "w") as f:
+                json.dump(cookies, f)
+            logger.info(f"Saved {len(cookies)} TikTok cookies → {TIKTOK_COOKIES_FILE}")
+        except Exception as e:
+            logger.debug(f"TikTok cookie save failed: {e}")
+
+    def _load_cookies(self):
+        if not os.path.exists(TIKTOK_COOKIES_FILE):
+            return
+        try:
+            with open(TIKTOK_COOKIES_FILE) as f:
+                cookies = json.load(f)
+            loaded = 0
+            for cookie in cookies:
+                cookie.pop("sameSite", None)
+                try:
+                    self._driver.add_cookie(cookie)
+                    loaded += 1
+                except Exception:
+                    pass
+            if loaded:
+                logger.info(f"Loaded {loaded} TikTok cookies — refreshing session...")
+                self._driver.get("https://www.tiktok.com")
+                time.sleep(2)
+        except Exception as e:
+            logger.debug(f"TikTok cookie load failed: {e}")
+
+    def _is_logged_in(self) -> bool:
+        """Return True if TikTok session appears active."""
+        try:
+            url = self._driver.current_url or ""
+            source = self._driver.page_source or ""
+            if "/login" in url or "/signup" in url:
+                return False
+            # TikTok embeds user info in the page when logged in
+            logged_in_hints = [
+                '"isLoginedUser":true' in source,
+                'data-e2e="profile-icon"' in source,
+                '"loginType"' in source,
+                'uploadButton' in source,
+            ]
+            return any(logged_in_hints)
+        except Exception:
+            return False
+
+    def wait_for_login(self) -> bool:
+        """
+        Navigate to the TikTok login page and wait up to 5 minutes
+        for the user to complete login manually.  Saves cookies on success.
+        """
+        logger.info(
+            "TikTok login required — opening login page in the browser window. "
+            "Please log in with your TikTok account (you have 5 minutes)."
+        )
+        self._driver.get("https://www.tiktok.com/login")
+        time.sleep(3)
+
+        deadline = time.time() + LOGIN_WAIT_SECS
+        while time.time() < deadline:
+            try:
+                url = self._driver.current_url or ""
+                if "tiktok.com" in url and "/login" not in url and "/signup" not in url:
+                    time.sleep(3)  # Let cookies settle after redirect
+                    self._save_cookies()
+                    logger.info("TikTok login successful — session saved.")
+                    return True
+            except Exception:
+                pass
+            time.sleep(2)
+
+        logger.warning("TikTok login timed out after 5 minutes.")
+        return False
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -261,6 +348,23 @@ class TikTokScraper:
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
 
+def do_tiktok_login(headless: bool = False):
+    """
+    Standalone login helper: open a browser, load any saved cookies, and if the
+    session isn't active, open the TikTok login page and wait for the user to
+    log in manually.  Cookies are saved to tiktok_cookies.json on success.
+    """
+    scraper = TikTokScraper(headless=headless)
+    scraper.start()
+    try:
+        if scraper._is_logged_in():
+            logger.info("Already logged in to TikTok (saved session is valid).")
+        else:
+            scraper.wait_for_login()
+    finally:
+        scraper.stop()
+
+
 def run_tiktok_scan(
     keywords: set[str],
     headless: bool = False,
@@ -274,6 +378,18 @@ def run_tiktok_scan(
     """
     scraper = TikTokScraper(headless=headless)
     scraper.start()
+
+    # Check login status; prompt for manual login if not headless
+    if not scraper._is_logged_in():
+        if headless:
+            logger.warning(
+                "TikTok session not found (no saved cookies). "
+                "Run 'python main.py --tiktok-login' first to save your session, "
+                "or use the 'TikTok Login' button in the GUI."
+            )
+        else:
+            logger.info("TikTok session not found — opening login page...")
+            scraper.wait_for_login()
 
     all_results: list[TikTokResult] = []
     seen_urls: set[str] = set()
