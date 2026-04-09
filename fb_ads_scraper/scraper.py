@@ -477,12 +477,12 @@ class FBAdsScraper:
                         if pname:
                             all_page_names_for_ai.append(pname)
 
-                if depth < self.max_keyword_depth and new_ads and self.use_ai:
-                    # AI-only expansion — frequency-based picks generic ad-copy
-                    # words ("luxury", "delivery") that are useless for dropshipping
-                    if all_bodies_for_ai:
+                if depth < self.max_keyword_depth and new_ads:
+                    expanded = False
+                    if self.use_ai and all_bodies_for_ai:
+                        # AI expansion: asks Claude for product-specific phrases
                         ai_kws = expand_keywords_with_ai(
-                            all_bodies_for_ai[-60:],  # recent bodies
+                            all_bodies_for_ai[-60:],
                             self._searched_keywords,
                             max_new=8,
                             page_names=all_page_names_for_ai[-40:],
@@ -492,7 +492,23 @@ class FBAdsScraper:
                                 queue.append((kw, depth + 1))
                         if ai_kws:
                             save_state(self.state_file, self._snapshot_state(queue))
+                            expanded = True
                             continue
+
+                    if not expanded:
+                        # Phrase-based fallback: bigrams/trigrams from ad copy
+                        # (much better than single words — finds "dog anxiety vest"
+                        # instead of "anxiety" or "vest" separately)
+                        phrase_kws = extract_new_keywords(
+                            new_ads, self._searched_keywords, max_new=6
+                        )
+                        for kw in phrase_kws:
+                            if kw not in self._searched_keywords:
+                                queue.append((kw, depth + 1))
+                        if phrase_kws:
+                            logger.debug(
+                                f"  Phrase expansion: {phrase_kws}"
+                            )
 
                 # Save after every keyword so interruptions are resumable
                 save_state(self.state_file, self._snapshot_state(queue))

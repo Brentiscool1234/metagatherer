@@ -32,7 +32,7 @@ _STOP_WORDS = {
     "this", "that", "these", "those", "i", "you", "he", "she", "we",
     "they", "it", "me", "him", "her", "us", "them", "my", "your", "his",
     "our", "their", "its", "what", "which", "who", "whom", "whose",
-    # Generic adjectives / adverbs (all useless as search terms)
+    # Generic adjectives / adverbs (useless as search terms)
     "good", "great", "best", "better", "bad", "new", "old", "big", "small",
     "large", "little", "high", "low", "long", "short", "right", "left",
     "real", "sure", "true", "false", "own", "same", "different", "other",
@@ -43,7 +43,7 @@ _STOP_WORDS = {
     "however", "though", "although", "because", "while", "when", "where",
     "how", "why", "than", "so", "if", "not", "no", "yes", "any", "all",
     "first", "last", "next", "second", "third", "early", "late",
-    # Ecommerce / marketing noise (not product keywords)
+    # Ecommerce / marketing noise — useless as search terms
     "buy", "shop", "order", "off", "free", "sale", "today", "click",
     "link", "bio", "use", "code", "save", "check", "out", "offer",
     "deal", "discount", "shipping", "cart", "add", "limited", "time",
@@ -55,11 +55,22 @@ _STOP_WORDS = {
     "months", "years", "day", "week", "month", "year", "per", "over",
     "people", "person", "men", "women", "man", "woman", "kids", "family",
     "life", "world", "home", "house", "place", "things", "thing",
-    "learn", "style", "yourself", "yourself", "reviews", "review",
+    "learn", "style", "yourself", "reviews", "review",
+    "sponsored", "ad", "ads", "advertisement", "advertiser",
+    "delivery", "deliver", "delivered", "upgrade", "upgraded",
+    "luxury", "luxurious", "premium", "quality", "brand", "brands",
+    "savings", "save", "saved", "products", "product", "items", "item",
+    "store", "stores", "online", "website", "site",
+    "choose", "chosen", "choice", "living", "lifestyle",
+    "meals", "meal", "food", "drink", "level", "levels",
+    "results", "result", "experience", "experiences",
+    "amazing", "incredible", "fantastic", "wonderful", "powerful",
+    "everything", "nothing", "something", "anything",
+    "needs", "need", "needed", "wants", "wanted",
+    "later", "elevate", "elevated", "transform", "transformation",
     # Web / tech noise
     "www", "http", "https", "com", "co", "uk", "eu", "org", "net",
     "facebook", "instagram", "tiktok", "youtube", "twitter",
-    # Single letters and very short strings (handled by min_len but listed anyway)
     "i", "a",
 }
 
@@ -191,15 +202,57 @@ def cluster_page_ads(ads: list[dict]) -> list[list[dict]]:
 
 def extract_new_keywords(ads: list[dict], existing: set[str], max_new: int = 15) -> list[str]:
     """
-    Mine `ads` for product keyword phrases not yet in `existing`.
-    Returns up to `max_new` new candidate search terms.
-    """
-    freq: Counter = Counter()
-    for ad in ads:
-        for kw in extract_keywords(ad, top_n=20):
-            if kw not in existing:
-                freq[kw] += 1
+    Mine ads for product keyword PHRASES (bigrams + trigrams) not yet searched.
 
-    # Only return words that appeared in at least 2 different ads (reduces noise)
-    candidates = [w for w, c in freq.most_common(max_new * 2) if c >= 2]
-    return candidates[:max_new]
+    Single words like "luxury" or "delivery" are useless for finding dropshipping
+    products. 2-3 word phrases like "dog anxiety vest" or "knee compression sleeve"
+    are actual searchable product names — that's what we want to expand into.
+
+    Rules:
+    - Both/all words in a phrase must pass the stop-word filter
+    - Phrase must appear in at least 2 different ads (filters brand-specific copy)
+    - Trigrams ranked higher than bigrams (more specific)
+    """
+    # Build a clean word list per ad, used for phrase generation
+    def _words(ad: dict) -> list[str]:
+        text = get_ad_text(ad)
+        cleaned = _clean_text(text)
+        return [
+            w for w in cleaned.split()
+            if len(w) >= 3 and w not in _STOP_WORDS and not w.isdigit()
+        ]
+
+    # Count how many distinct ads each phrase appears in
+    phrase_ad_count: Counter = Counter()
+    seen_in_ad: dict[str, set] = {}  # phrase → set of ad indices
+
+    for ad_idx, ad in enumerate(ads):
+        words = _words(ad)
+        seen_phrases: set[str] = set()
+
+        # Bigrams
+        for i in range(len(words) - 1):
+            phrase = f"{words[i]} {words[i + 1]}"
+            if phrase not in existing:
+                seen_phrases.add(phrase)
+
+        # Trigrams
+        for i in range(len(words) - 2):
+            phrase = f"{words[i]} {words[i + 1]} {words[i + 2]}"
+            if phrase not in existing:
+                seen_phrases.add(phrase)
+
+        for phrase in seen_phrases:
+            phrase_ad_count[phrase] += 1
+
+    # Keep phrases seen in 2+ ads, prefer trigrams (more specific)
+    candidates = [
+        phrase for phrase, cnt in phrase_ad_count.most_common(max_new * 4)
+        if cnt >= 2
+    ]
+    # Trigrams first, then bigrams, both ranked by frequency
+    trigrams = [p for p in candidates if len(p.split()) == 3]
+    bigrams  = [p for p in candidates if len(p.split()) == 2]
+    ranked = trigrams + bigrams
+
+    return ranked[:max_new]
