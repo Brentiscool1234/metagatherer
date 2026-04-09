@@ -19,6 +19,7 @@ Examples:
 import logging
 import os
 import sys
+import io
 from datetime import datetime
 
 import click
@@ -26,10 +27,26 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.logging import RichHandler
 
+# ── Windows UTF-8 fix ─────────────────────────────────────────────────────────
+# When launched via pythonw.exe (GUI subprocess) stdout is a pipe but Python
+# may assign it cp1252 encoding.  Rich's legacy Windows renderer then crashes
+# on box-drawing characters (─ in console.rule).  Force UTF-8 + disable the
+# legacy renderer so Rich uses normal ANSI output regardless.
+if sys.platform == "win32":
+    try:
+        if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        elif sys.stdout is not None and hasattr(sys.stdout, "buffer"):
+            sys.stdout = io.TextIOWrapper(
+                sys.stdout.buffer, encoding="utf-8", errors="replace"
+            )
+    except Exception:
+        pass
+
 # Load .env before anything else so ANTHROPIC_API_KEY is available
 load_dotenv()
 
-console = Console()
+console = Console(legacy_windows=False)
 
 
 def _setup_logging(verbose: bool):
