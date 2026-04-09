@@ -78,6 +78,8 @@ def _setup_logging(verbose: bool):
               help="Path to the persistent state file for resuming interrupted runs.")
 @click.option("--reset", is_flag=True, default=False,
               help="Ignore saved state and start a fresh scan from scratch.")
+@click.option("--facebook/--no-facebook", default=True, show_default=True,
+              help="Run the Facebook Ads Library scan.")
 @click.option("--tiktok/--no-tiktok", default=True, show_default=True,
               help="Also scan TikTok for the same keywords (50k views, last 30 days).")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
@@ -85,7 +87,7 @@ def main(
     countries, days, min_ads, min_followers, max_followers,
     niche, keywords, max_keywords, keyword_depth, max_ads_per_keyword,
     video_only, require_shop_now, headless, output, no_csv,
-    tiktok, state_file, reset, verbose,
+    facebook, tiktok, state_file, reset, verbose,
 ):
     """MetaGatherer: Find winning ecommerce products in the Facebook Ads Library."""
     _setup_logging(verbose)
@@ -131,67 +133,88 @@ def main(
     else:
         console.print(f"[dim]No saved state found — starting fresh.[/dim]\n")
 
-    if not headless:
+    if not headless and facebook:
         console.print(
             "[dim]A Chrome window will open and navigate the public Ads Library. "
             "Don't close it while scanning.[/dim]\n"
         )
 
-    scraper = FBAdsScraper(
-        countries=list(countries),
-        days=days,
-        min_ads=min_ads,
-        min_followers=min_followers,
-        max_followers=max_followers,
-        prefer_video=True,
-        require_shop_now=require_shop_now,
-        max_keyword_depth=keyword_depth,
-        max_keywords=max_keywords,
-        max_ads_per_keyword=max_ads_per_keyword,
-        headless=headless,
-        state_file=state_file,
-        reset=reset,
-        niche=niche or None,
-    )
-
     from fb_ads_scraper.scoring import WINNER_THRESHOLD, NEAR_MISS_THRESHOLD
 
-    all_products = scraper.run(extra_keywords=list(keywords) if keywords else None)
+    all_products = []
+    tiktok_keywords: set = set(keywords) if keywords else set()
 
-    if video_only:
-        all_products = [w for w in all_products if w.is_video]
+    # ── Facebook scan ──────────────────────────────────────────────────────────
+    if facebook:
+        scraper = FBAdsScraper(
+            countries=list(countries),
+            days=days,
+            min_ads=min_ads,
+            min_followers=min_followers,
+            max_followers=max_followers,
+            prefer_video=True,
+            require_shop_now=require_shop_now,
+            max_keyword_depth=keyword_depth,
+            max_keywords=max_keywords,
+            max_ads_per_keyword=max_ads_per_keyword,
+            headless=headless,
+            state_file=state_file,
+            reset=reset,
+            niche=niche or None,
+        )
+        all_products = scraper.run(extra_keywords=list(keywords) if keywords else None)
+        tiktok_keywords = scraper._searched_keywords
 
-    winners = [w for w in all_products if getattr(w, "score", 0) >= WINNER_THRESHOLD]
+        if video_only:
+            all_products = [w for w in all_products if w.is_video]
 
-    print_summary_banner(
-        total_keywords=len(scraper._searched_keywords),
-        total_ads=len(scraper._seen_keys),
-        total_pages=len(scraper._page_ads),
-        winner_count=len(winners),
-    )
-    print_results_table(all_products, days)
+        winners = [w for w in all_products if getattr(w, "score", 0) >= WINNER_THRESHOLD]
+        print_summary_banner(
+            total_keywords=len(scraper._searched_keywords),
+            total_ads=len(scraper._seen_keys),
+            total_pages=len(scraper._page_ads),
+            winner_count=len(winners),
+        )
+        print_results_table(all_products, days)
 
-    exportable = [w for w in all_products if getattr(w, "score", 0) >= NEAR_MISS_THRESHOLD]
-    if not no_csv and exportable:
-        if output is None:
-            output = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        export_csv(exportable, output)
+        exportable = [w for w in all_products if getattr(w, "score", 0) >= NEAR_MISS_THRESHOLD]
+        if not no_csv and exportable:
+            if output is None:
+                output = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+            export_csv(exportable, output)
+    else:
+        console.print("[dim]Facebook scan skipped (--no-facebook).[/dim]\n")
+        # Use seed keywords for TikTok when Facebook is skipped
+        from fb_ads_scraper.scraper import SEED_KEYWORDS, NICHE_SEED_MAP, _NICHE_ALIASES
+        if niche:
+            niche_lower = niche.lower()
+            niche_seeds = next(
+                (kws for k, kws in NICHE_SEED_MAP.items() if k in niche_lower), []
+            )
+            if not niche_seeds:
+                words = niche_lower.split()
+                alias = next((_NICHE_ALIASES[w] for w in words if w in _NICHE_ALIASES), None)
+                niche_seeds = NICHE_SEED_MAP.get(alias, []) if alias else []
+            tiktok_keywords = set(niche_seeds) | set(keywords)
+        if not tiktok_keywords:
+            tiktok_keywords = set(SEED_KEYWORDS[:10])
 
     # ── TikTok scan ────────────────────────────────────────────────────────────
     if tiktok:
         console.rule("[bold magenta]TikTok Scan[/bold magenta]")
         console.print(
-            f"  Scanning TikTok for [bold]{len(scraper._searched_keywords)}[/bold] "
+            f"  Scanning TikTok for [bold]{len(tiktok_keywords)}[/bold] "
             f"keywords  •  ≥50k views  •  last 30 days\n"
         )
         from fb_ads_scraper.tiktok import run_tiktok_scan
         tiktok_results = run_tiktok_scan(
-            keywords=scraper._searched_keywords,
+            keywords=tiktok_keywords,
             headless=headless,
         )
         print_tiktok_results(tiktok_results)
         if not no_csv and tiktok_results:
-            tt_path = (output or "results").replace(".csv", "") + "_tiktok.csv"
+            ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+            tt_path = (output or f"results_{ts}").replace(".csv", "") + "_tiktok.csv"
             export_tiktok_csv(tiktok_results, tt_path)
 
 
