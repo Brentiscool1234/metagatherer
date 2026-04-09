@@ -10,7 +10,10 @@ AI keyword expansion uses Claude (ANTHROPIC_API_KEY in .env) to suggest
 specific product search terms instead of generic frequency-mined words.
 """
 
+import json
 import logging
+import os
+import time as _time
 from collections import defaultdict, deque
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -23,7 +26,43 @@ from .state import save_state, load_state, state_summary, DEFAULT_STATE_FILE
 
 logger = logging.getLogger(__name__)
 
-# Pages/ads from these platforms are supplier marketplaces, not dropshipping stores
+# ── Control-file helpers (GUI ↔ scraper IPC) ──────────────────────────────────
+_CTRL_FILE   = "mg_control.json"   # GUI writes cmd → scraper reads
+_INJECT_FILE = "mg_inject.json"    # Expert writes keywords → scraper reads
+
+
+def _read_control() -> str:
+    """Read the current control command ('pause'/'resume'/'stop') or ''."""
+    try:
+        if os.path.exists(_CTRL_FILE):
+            data = json.loads(open(_CTRL_FILE).read())
+            return data.get("cmd", "")
+    except Exception:
+        pass
+    return ""
+
+
+def _clear_control():
+    try:
+        if os.path.exists(_CTRL_FILE):
+            os.remove(_CTRL_FILE)
+    except Exception:
+        pass
+
+
+def _read_and_clear_inject() -> list[str]:
+    """Return any AI-injected keywords and remove the file."""
+    try:
+        if os.path.exists(_INJECT_FILE):
+            data = json.loads(open(_INJECT_FILE).read())
+            os.remove(_INJECT_FILE)
+            return [k for k in data if isinstance(k, str)]
+    except Exception:
+        pass
+    return []
+
+
+# ── Pages/ads from these platforms are supplier marketplaces, not dropshipping stores
 _PLATFORM_BLOCKLIST = {
     "alibaba", "aliexpress", "temu", "amazon", "1688", "dhgate", "shein",
     "wish.com", "banggood",
@@ -567,6 +606,41 @@ class FBAdsScraper:
                 # Save after every keyword so interruptions are resumable
                 save_state(self.state_file, self._snapshot_state(queue))
 
+                # ── Check GUI control signals ─────────────────────────────
+                # Check for AI-injected keywords (written by the expert module)
+                injected = _read_and_clear_inject()
+                for kw in injected:
+                    if kw not in self._searched_keywords:
+                        queue.appendleft((kw, depth + 1))
+                        logger.info(f"  AI expert injected keyword: '{kw}'")
+
+                ctrl = _read_control()
+                if ctrl == "pause":
+                    _clear_control()
+                    logger.info("⏸  Scan paused — saving state. Press Continue to resume.")
+                    save_state(self.state_file, self._snapshot_state(queue))
+                    # Wait in a tight loop until resume or stop
+                    while True:
+                        _time.sleep(1)
+                        cmd2 = _read_control()
+                        if cmd2 == "resume":
+                            _clear_control()
+                            logger.info("▶  Scan resumed.")
+                            break
+                        if cmd2 == "stop":
+                            _clear_control()
+                            logger.info("⏹  Stopped while paused — exporting results.")
+                            break  # breaks inner while; outer while exits next iteration
+                    else:
+                        continue  # keep scanning
+                    break  # stop was received while paused — exit Phase 1
+
+                if ctrl == "stop":
+                    _clear_control()
+                    logger.info("⏹  Stop requested — finishing current state and exporting results.")
+                    save_state(self.state_file, self._snapshot_state(queue))
+                    break
+
             logger.info(
                 f"Phase 1 done: {len(self._page_ads)} pages, "
                 f"{len(self._seen_keys)} ads collected."
@@ -588,6 +662,12 @@ class FBAdsScraper:
             )
 
             for pid, existing_ads in promising.items():
+                # Check for stop signal between page visits too
+                if _read_control() == "stop":
+                    _clear_control()
+                    logger.info("⏹  Stop received during Phase 2 — exporting partial results.")
+                    break
+
                 # Skip supplier marketplace pages entirely
                 if any(term in pid.lower() for term in _PLATFORM_BLOCKLIST):
                     continue
