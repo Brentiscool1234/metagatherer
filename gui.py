@@ -127,6 +127,26 @@ class App(tk.Tk):
         self.v_no_csv   = tk.BooleanVar(value=False)
         self._check(left, "Headless (no visible browser)", self.v_headless)
         self._check(left, "Reset saved state",              self.v_reset)
+
+        # ── API key ───────────────────────────────────────────────────────────
+        self._section(left, "AI Expert (Anthropic)")
+        api_row = tk.Frame(left, bg=BG)
+        api_row.pack(fill="x", pady=2)
+        tk.Label(api_row, text="API Key", font=FONT, bg=BG, fg=FG,
+                 width=8, anchor="w").pack(side="left")
+        self.v_api_key = tk.StringVar(value=self._load_api_key())
+        api_entry = tk.Entry(api_row, textvariable=self.v_api_key, font=FONT,
+                             bg=BG2, fg=FG, insertbackground=FG, bd=0,
+                             highlightbackground=BG3, highlightthickness=1,
+                             show="*")          # mask like a password field
+        api_entry.pack(side="left", expand=True, fill="x")
+        tk.Button(api_row, text="Save", font=FONT, bg=BG3, fg=FG,
+                  activebackground=GREEN, bd=0, padx=6,
+                  command=self._save_api_key).pack(side="left", padx=(4, 0))
+        self.api_status = tk.Label(left, text="", font=("Segoe UI", 8),
+                                   bg=BG, fg=FG_DIM)
+        self.api_status.pack(anchor="w")
+        self._refresh_api_status()
         self._check(left, "Skip CSV export",                self.v_no_csv)
 
         out_row = tk.Frame(left, bg=BG)
@@ -295,6 +315,63 @@ class App(tk.Tk):
         return var
 
     # ── Actions ──────────────────────────────────────────────────────────────
+
+    # ── API key persistence ───────────────────────────────────────────────────
+
+    def _env_path(self) -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+    def _load_api_key(self) -> str:
+        try:
+            with open(self._env_path()) as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("ANTHROPIC_API_KEY="):
+                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except FileNotFoundError:
+            pass
+        return os.environ.get("ANTHROPIC_API_KEY", "")
+
+    def _save_api_key(self):
+        key = self.v_api_key.get().strip()
+        env_path = self._env_path()
+
+        # Read existing .env lines, remove any old ANTHROPIC_API_KEY lines
+        lines = []
+        try:
+            with open(env_path) as f:
+                lines = [l for l in f.readlines()
+                         if not l.startswith("ANTHROPIC_API_KEY=")]
+        except FileNotFoundError:
+            pass
+
+        if key:
+            lines.append(f"ANTHROPIC_API_KEY={key}\n")
+
+        with open(env_path, "w") as f:
+            f.writelines(lines)
+
+        # Also update the running process environment so the expert picks it up
+        if key:
+            os.environ["ANTHROPIC_API_KEY"] = key
+        else:
+            os.environ.pop("ANTHROPIC_API_KEY", None)
+
+        # Reset expert so it re-reads the key on next use
+        with self._expert_lock:
+            self._expert = None
+
+        self._refresh_api_status()
+
+    def _refresh_api_status(self):
+        key = self.v_api_key.get().strip()
+        if key and key.startswith("sk-"):
+            self.api_status.config(
+                text=f"✓ Key set ({key[:8]}…)", fg=GREEN)
+        elif key:
+            self.api_status.config(text="⚠ Key format looks wrong", fg=YELLOW)
+        else:
+            self.api_status.config(text="No key — AI expert disabled", fg=FG_DIM)
 
     def _browse_output(self):
         path = filedialog.asksaveasfilename(
