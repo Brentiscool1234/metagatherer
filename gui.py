@@ -293,14 +293,21 @@ class App(tk.Tk):
 
         self._append("DIM", f"$ {' '.join(cmd)}\n\n")
 
+        # Force UTF-8 so Rich's box-drawing chars don't crash on Windows cp1252
+        env = os.environ.copy()
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+
         try:
             proc = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
+                encoding="utf-8",
                 bufsize=1,
                 cwd=os.path.dirname(__file__),
+                env=env,
             )
             for line in proc.stdout:
                 if not self._running:
