@@ -90,11 +90,17 @@ class DropshippingExpert:
             except Exception as e:
                 err = str(e)
                 last_err = err
+                # Billing / auth errors — no point trying other models
+                if any(x in err.lower() for x in ("credit", "billing", "balance", "401", "authentication", "permission")):
+                    msg = "No credits — go to console.anthropic.com → Plans & Billing to top up." \
+                          if "credit" in err.lower() or "balance" in err.lower() \
+                          else f"Auth error: {err[:150]}"
+                    return "", msg
                 # Bad model name → try next
                 if any(x in err for x in ("400", "model", "not_found", "invalid_request")):
                     logger.debug(f"Model {model} unavailable, trying next: {err[:80]}")
                     continue
-                # Auth / rate limit / network → don't retry other models
+                # Other error (network etc.)
                 logger.debug(f"Expert API call failed ({model}): {err[:200]}")
                 return "", err[:200]
         return "", f"All models failed. Last error: {last_err[:200]}"
