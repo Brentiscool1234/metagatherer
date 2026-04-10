@@ -60,15 +60,24 @@ class DropshippingExpert:
         self._client = anthropic.Anthropic(api_key=key)
         return self._client
 
-    def _call(self, messages: list[dict], max_tokens: int = 350) -> str:
+    def _call(self, messages: list[dict], max_tokens: int = 350) -> tuple[str, str]:
+        """
+        Returns (response_text, error_message).
+        On success: (text, "").  On failure: ("", description).
+        """
         client = self._client_or_none()
         if not client:
-            return ""
+            key = os.getenv("ANTHROPIC_API_KEY", "")
+            if not key:
+                return "", "No API key set — paste your key in the AI Expert box and click Save."
+            return "", "anthropic package not installed — run: pip install anthropic"
+
         models = [
             "claude-haiku-4-5-20251001",
             "claude-3-5-haiku-20241022",
             "claude-3-haiku-20240307",
         ]
+        last_err = ""
         for model in models:
             try:
                 resp = client.messages.create(
@@ -77,14 +86,18 @@ class DropshippingExpert:
                     system=_SYSTEM_PROMPT,
                     messages=messages,
                 )
-                return resp.content[0].text.strip()
+                return resp.content[0].text.strip(), ""
             except Exception as e:
                 err = str(e)
+                last_err = err
+                # Bad model name → try next
                 if any(x in err for x in ("400", "model", "not_found", "invalid_request")):
+                    logger.debug(f"Model {model} unavailable, trying next: {err[:80]}")
                     continue
-                logger.debug(f"Expert API call failed ({model}): {err[:120]}")
-                return ""
-        return ""
+                # Auth / rate limit / network → don't retry other models
+                logger.debug(f"Expert API call failed ({model}): {err[:200]}")
+                return "", err[:200]
+        return "", f"All models failed. Last error: {last_err[:200]}"
 
     @staticmethod
     def _extract_keywords(text: str) -> list[str]:
@@ -136,9 +149,9 @@ class DropshippingExpert:
             "Output suggested keywords as a ```json array."
         )
 
-        text = self._call([{"role": "user", "content": prompt}], max_tokens=300)
+        text, err = self._call([{"role": "user", "content": prompt}], max_tokens=300)
         if not text:
-            return "", []
+            return err or "", []
 
         keywords = self._extract_keywords(text)
         commentary = re.sub(r"```json.*?```", "", text, flags=re.DOTALL).strip()
@@ -149,11 +162,9 @@ class DropshippingExpert:
         Free-form conversation.  Maintains history so follow-up questions work.
         Scan context is automatically appended to each user message.
         """
-        if not self._client_or_none():
-            return (
-                "AI expert unavailable — add ANTHROPIC_API_KEY=sk-ant-... "
-                "to your .env file to enable this."
-            )
+        # Quick pre-flight: if no key at all, say so clearly
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            return "No API key set — paste your Anthropic key in the AI Expert box on the left and click Save."
 
         ctx_str = ""
         if self._context:
@@ -163,10 +174,11 @@ class DropshippingExpert:
         if len(self._history) > 20:
             self._history = self._history[-20:]
 
-        response = self._call(self._history, max_tokens=450)
+        response, err = self._call(self._history, max_tokens=450)
         if response:
             self._history.append({"role": "assistant", "content": response})
-        return response or "No response — check your API key or connection."
+            return response
+        return f"API error: {err}" if err else "No response received."
 
     @property
     def available(self) -> bool:
