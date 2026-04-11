@@ -22,8 +22,8 @@ from selenium.common.exceptions import WebDriverException
 logger = logging.getLogger(__name__)
 
 ADS_LIBRARY_BASE = "https://www.facebook.com/ads/library/"
-SCROLL_DELAY = 2.5
-PAGE_LOAD_WAIT = 5
+SCROLL_DELAY = 1.2       # was 2.5 — enough for React lazy-load without over-waiting
+PAGE_LOAD_WAIT = 2.5     # was 5 — _wait_for_ads() does the real waiting
 COOKIES_FILE = "fb_cookies.json"
 
 MONTH_MAP = {
@@ -465,6 +465,14 @@ class AdsLibraryBrowser:
                 ]):
                     return True
 
+                # Detect empty result pages early — no point waiting the full timeout
+                if any(x in text for x in [
+                    "No results found", "no results found",
+                    "0 results", "didn't find any ads",
+                ]):
+                    logger.debug("  Empty results page detected — skipping keyword")
+                    return False
+
                 # Still showing consent wall — try again
                 if any(x in text.lower() for x in [
                     "allow all cookies", "accept all", "before you continue",
@@ -475,7 +483,7 @@ class AdsLibraryBrowser:
 
             except Exception:
                 pass
-            time.sleep(1.5)
+            time.sleep(0.8)   # was 1.5
 
         # Log what's on the page to help diagnose
         try:
@@ -506,15 +514,7 @@ class AdsLibraryBrowser:
             time.sleep(PAGE_LOAD_WAIT)
             self._dismiss_dialogs()
 
-            # Nudge-scroll: triggers React lazy-load without moving past results
-            try:
-                self._driver.execute_script("window.scrollBy(0, 400);")
-                time.sleep(0.4)
-                self._driver.execute_script("window.scrollBy(0, -400);")
-            except Exception:
-                pass
-
-            if not self._wait_for_ads(timeout=25):
+            if not self._wait_for_ads(timeout=18):
                 logger.warning(f"  Skipping '{keyword}' — page never loaded ads")
                 return []
 
@@ -522,7 +522,7 @@ class AdsLibraryBrowser:
             logger.debug(f"  Page title: {title}")
 
             no_new_rounds = 0
-            max_scrolls = max(10, max_ads // 15)
+            max_scrolls = max(8, max_ads // 15)
 
             for scroll_n in range(max_scrolls):
                 try:
@@ -549,7 +549,7 @@ class AdsLibraryBrowser:
 
                 if added == 0:
                     no_new_rounds += 1
-                    if no_new_rounds >= 3:
+                    if no_new_rounds >= 2:   # was 3
                         break
                 else:
                     no_new_rounds = 0
@@ -593,66 +593,44 @@ class AdsLibraryBrowser:
             self._driver.get(url)
             time.sleep(PAGE_LOAD_WAIT)
             self._dismiss_dialogs()
-            self._wait_for_ads(timeout=12)
+            self._wait_for_ads(timeout=10)
 
-            # Extract follower count — retry a few times for header to render.
-            # The Ads Library page sometimes shows it in the advertiser header.
-            for _attempt in range(4):
+            # Extract follower count — retry twice (header often renders after first JS pass)
+            _FOLLOWER_JS = r"""
+                var t = document.body.innerText || '';
+                var patterns = [
+                    /([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i,
+                    /followers?\s*[:\u00b7\u2022·\-]?\s*([\d][\d,\.]*\s*[KkMm]?)/i,
+                    /([\d][\d,\.]*\s*[KkMm]?)\s*(?:people follow)/i,
+                    /·\s*([\d][\d,\.]*\s*[KkMm]?)\s*(?:followers?|likes?)/i,
+                ];
+                for (var i = 0; i < patterns.length; i++) {
+                    var m = t.match(patterns[i]);
+                    if (m) return m[0];
+                }
+                var metas = Array.prototype.slice.call(
+                    document.querySelectorAll('[aria-label],[data-testid]'));
+                for (var j = 0; j < metas.length; j++) {
+                    var al = (metas[j].getAttribute('aria-label') || '');
+                    var fm = al.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|likes?)/i);
+                    if (fm) return fm[0];
+                }
+                return '';
+            """
+            for _attempt in range(2):   # was 4 × 1.5s; now 2 × 0.8s
                 try:
-                    follower_text = self._driver.execute_script(r"""
-                        var t = document.body.innerText || '';
-                        // Multiple patterns Facebook uses for follower display
-                        var patterns = [
-                            /([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i,
-                            /followers?\s*[:\u00b7\u2022·\-]?\s*([\d][\d,\.]*\s*[KkMm]?)/i,
-                            /([\d][\d,\.]*\s*[KkMm]?)\s*(?:people follow)/i,
-                            /([\d][\d,\.]*\s*[KkMm]?)\s*Followers/,
-                            /·\s*([\d][\d,\.]*\s*[KkMm]?)\s*(?:followers?|likes?)/i,
-                        ];
-                        for (var i = 0; i < patterns.length; i++) {
-                            var m = t.match(patterns[i]);
-                            if (m) return m[0];
-                        }
-                        // Also check meta / aria labels which sometimes contain counts
-                        var metas = Array.prototype.slice.call(
-                            document.querySelectorAll('[aria-label],[data-testid]'));
-                        for (var j = 0; j < metas.length; j++) {
-                            var al = (metas[j].getAttribute('aria-label') || '');
-                            var fm = al.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|likes?)/i);
-                            if (fm) return fm[0];
-                        }
-                        return '';
-                    """) or ""
+                    follower_text = self._driver.execute_script(_FOLLOWER_JS) or ""
                     if follower_text:
                         follower_count = parse_follower_count(follower_text)
                         logger.debug(f"  Followers {page_id}: {follower_text} → {follower_count}")
                         break
-                    time.sleep(1.5)
+                    time.sleep(0.8)
                 except Exception:
                     break
 
-            # If still 0, try the actual Facebook page (shows follower count prominently)
-            if follower_count == 0 and not page_id.isdigit():
-                try:
-                    prev_url = self._driver.current_url
-                    self._driver.get(f"https://www.facebook.com/{page_id}")
-                    time.sleep(3)
-                    follower_text = self._driver.execute_script(r"""
-                        var t = document.body.innerText || '';
-                        var m = t.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|people follow)/i);
-                        return m ? m[0] : '';
-                    """) or ""
-                    if follower_text:
-                        follower_count = parse_follower_count(follower_text)
-                        logger.debug(f"  Followers (fb page) {page_id}: {follower_text} → {follower_count}")
-                    # Navigate back to the Ads Library page we were on
-                    self._driver.get(prev_url)
-                    time.sleep(PAGE_LOAD_WAIT)
-                except Exception:
-                    pass
-
+            # Scroll to collect all ads on this page
             no_new = 0
-            for _ in range(15):
+            for _ in range(12):   # was 15 × 2.0s; now 12 × 1.2s
                 try:
                     raw = self._driver.execute_script(_EXTRACT_JS) or []
                 except WebDriverException:
@@ -670,7 +648,7 @@ class AdsLibraryBrowser:
 
                 if added == 0:
                     no_new += 1
-                    if no_new >= 3:
+                    if no_new >= 2:   # was 3
                         break
                 else:
                     no_new = 0
@@ -679,7 +657,7 @@ class AdsLibraryBrowser:
                     break
 
                 self._driver.execute_script("window.scrollBy(0, window.innerHeight * 2.5);")
-                time.sleep(2.0)
+                time.sleep(1.2)   # was 2.0
 
         except WebDriverException as e:
             logger.debug(f"  get_page_ads error {page_id}: {str(e)[:100]}")
@@ -698,7 +676,7 @@ class AdsLibraryBrowser:
         previous_url = self._driver.current_url
         try:
             self._driver.get(destination)
-            time.sleep(3)
+            time.sleep(1.5)   # was 3 — store pages load faster than FB
 
             final_url = self._driver.current_url
             if "myshopify.com" in final_url:
@@ -711,12 +689,12 @@ class AdsLibraryBrowser:
 
             return False, "browser: no shopify signals"
 
-        except WebDriverException as e:
+        except WebDriverException:
             return False, "browser error"
 
         finally:
             try:
                 self._driver.get(previous_url)
-                time.sleep(1.5)
+                time.sleep(0.8)   # was 1.5
             except Exception:
                 pass

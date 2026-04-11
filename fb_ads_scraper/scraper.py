@@ -301,8 +301,10 @@ NICHE_SEED_MAP: dict[str, list[str]] = {
     ],
 }
 
-# Pages seen this many times in Phase 1 get a full verification visit
-PAGE_VISIT_THRESHOLD = 2
+# Pages seen this many times in Phase 1 get a full verification visit.
+# Raising this reduces Phase 2 visits (each visit costs ~15s browser time).
+# A page must have accumulated 3+ ad-version units to be worth visiting.
+PAGE_VISIT_THRESHOLD = 3
 
 # Maps niche key → related terms for fast keyword-based relevance filtering
 NICHE_TERMS: dict[str, set[str]] = {
@@ -345,6 +347,87 @@ def _to_standard_ad(raw: dict, keyword: str) -> dict:
         # "N ads use this creative and text" — actual running ad count per card
         "_ad_versions": max(1, int(raw.get("ad_versions", 1) or 1)),
         "_cta_url": raw.get("cta_url", ""),
+    }
+
+
+def _api_search_keyword(client, keyword: str, countries: list, limit: int = 200) -> list:
+    """
+    Call the FB Ads Library API for a single keyword.
+    Returns a list of raw API ad dicts (already structured — no Selenium needed).
+    """
+    try:
+        return client.search_ads(
+            search_terms=keyword,
+            countries=countries,
+            active_status="ACTIVE",
+            limit=min(limit, 200),
+            max_pages=3,
+        )
+    except Exception as e:
+        logger.warning(f"  API search failed for '{keyword}': {e}")
+        return []
+
+
+def _api_ad_to_standard(api_ad: dict, keyword: str) -> dict:
+    """
+    Convert an FB API ad dict to the same internal format that _to_standard_ad
+    produces from Selenium-scraped data, so the rest of the pipeline is unchanged.
+    """
+    page_id = str(api_ad.get("page_id", "") or "unknown")
+    page_name = api_ad.get("page_name", "")
+
+    # Infer CTA URL from captions (API often puts store URL here)
+    captions = api_ad.get("ad_creative_link_captions") or []
+    if isinstance(captions, str):
+        captions = [captions]
+    cta_url = next((c for c in captions if c and c.startswith("http")), "")
+
+    # Infer start date from delivery start time
+    raw_start = (
+        api_ad.get("ad_delivery_start_time") or
+        api_ad.get("ad_creation_time") or ""
+    )
+    start_date = None
+    if raw_start:
+        try:
+            from datetime import datetime as _dt
+            dt = _dt.fromisoformat(raw_start.replace("+0000", "+00:00"))
+            start_date = dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    bodies = api_ad.get("ad_creative_bodies") or []
+    if isinstance(bodies, str):
+        bodies = [bodies]
+
+    is_video = (api_ad.get("media_type") or "").upper() == "VIDEO"
+    has_shop_now = any(
+        phrase in " ".join(bodies).lower()
+        for phrase in ("shop now", "buy now", "order now", "get yours")
+    )
+
+    platforms = api_ad.get("publisher_platforms") or ["facebook"]
+
+    return {
+        "id": api_ad.get("id", ""),
+        "page_id": page_id,
+        "page_name": page_name,
+        "page_url": f"https://www.facebook.com/{page_id}",
+        "ad_creative_bodies": bodies,
+        "ad_creative_link_captions": captions,
+        "ad_creative_link_titles": api_ad.get("ad_creative_link_titles") or [],
+        "ad_creative_link_descriptions": api_ad.get("ad_creative_link_descriptions") or [],
+        "ad_snapshot_url": api_ad.get("ad_snapshot_url", ""),
+        "media_type": "VIDEO" if is_video else "IMAGE",
+        "publisher_platforms": platforms,
+        "languages": api_ad.get("languages") or [],
+        "_follower_count": 0,       # fetched in Phase 2
+        "_has_shop_now": has_shop_now,
+        "_start_date": start_date,
+        "_keyword": keyword,
+        "_ad_versions": 1,          # API gives 1 record per creative
+        "_cta_url": cta_url,
+        "_key": api_ad.get("id", ""),
     }
 
 
@@ -529,12 +612,35 @@ class FBAdsScraper:
         if extra_keywords:
             seeds = list(extra_keywords) + [s for s in seeds if s not in extra_keywords]
 
+        # ── API fast-path detection ───────────────────────────────────────────
+        # If FB_ACCESS_TOKEN is set, Phase 1 runs via the official API (no
+        # browser needed — 10-30× faster). Phase 2 still needs the browser for
+        # accurate active-ad counts. Get a token at:
+        # developers.facebook.com → My Apps → Tools → Graph API Explorer
+        _fb_token = os.getenv("FB_ACCESS_TOKEN", "").strip()
+        _api_client = None
+        if _fb_token:
+            try:
+                from .api import FBApiClient
+                _api_client = FBApiClient(_fb_token)
+                if _api_client.verify_token():
+                    logger.info("FB API token valid — Phase 1 will use API (fast mode)")
+                else:
+                    logger.warning("FB_ACCESS_TOKEN invalid — falling back to browser")
+                    _api_client = None
+            except Exception as e:
+                logger.warning(f"FB API init failed: {e} — falling back to browser")
+                _api_client = None
+
         browser = AdsLibraryBrowser(countries=self.countries, headless=self.headless)
         browser.start()
 
         try:
             # ── Phase 1: Keyword sweep ────────────────────────────────────
-            logger.info("Phase 1: Keyword sweep")
+            logger.info(
+                "Phase 1: Keyword sweep"
+                + (" [API fast-mode]" if _api_client else " [browser mode]")
+            )
 
             # Resume from saved queue if available, otherwise start from seeds.
             # Any extra_keywords not yet searched are prepended.
@@ -560,27 +666,41 @@ class FBAdsScraper:
                 total += 1
 
                 logger.info(f"[{depth}] '{keyword}' ({total}/{self.max_keywords})")
-                raw_ads = browser.search_keyword(keyword, max_ads=self.max_ads_per_keyword)
+
+                if _api_client:
+                    raw_ads = _api_search_keyword(
+                        _api_client, keyword,
+                        countries=self.countries,
+                        limit=min(self.max_ads_per_keyword, 200),
+                    )
+                else:
+                    raw_ads = browser.search_keyword(keyword, max_ads=self.max_ads_per_keyword)
+
                 new_ads = []
 
                 for raw in raw_ads:
-                    key = raw.get("_key", "")
+                    key = raw.get("_key", "") or raw.get("id", "")
                     if not key or key in self._seen_keys:
                         continue
                     if _is_blocked(raw):
-                        self._seen_keys.add(key)  # mark seen so we don't re-process
+                        self._seen_keys.add(key)
                         continue
                     self._seen_keys.add(key)
-                    ad = _to_standard_ad(raw, keyword)
+                    # API ads are already in standard format; browser ads need conversion
+                    if _api_client:
+                        ad = _api_ad_to_standard(raw, keyword)
+                    else:
+                        ad = _to_standard_ad(raw, keyword)
                     page_id = ad.get("page_id", "")
                     if page_id and page_id != "unknown":
                         self._page_ads[page_id].append(ad)
                         self._page_keywords[page_id].add(keyword)
                         new_ads.append(ad)
-                        body = raw.get("ad_body", "")
+                        bodies = ad.get("ad_creative_bodies") or []
+                        body = bodies[0] if bodies else ""
                         if body:
                             all_bodies_for_ai.append(body)
-                        pname = raw.get("page_name", "")
+                        pname = ad.get("page_name", "")
                         if pname:
                             all_page_names_for_ai.append(pname)
 
