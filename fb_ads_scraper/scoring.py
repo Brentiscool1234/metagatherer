@@ -2,7 +2,7 @@
 Scoring engine — rates each WinningProduct candidate out of 10.0.
 
 Criteria and max points:
-  ad_versions    3.0  — "X ads use this creative" = real testing budget
+  ad_versions    3.0  — active ad count = real testing budget (14+ min, 20+ good, 30+ great)
   shopify        2.5  — Shopify = dropshipping infra confirmed
   ad_age         1.5  — running 14+ days = proven ROI, not just testing
   video_ads      1.0  — video converts better; serious advertisers use video
@@ -16,9 +16,14 @@ Score ≥ 6  → winner
 Score 4–5.9 → near-miss (show but flag)
 Score < 4  → excluded
 
-Design principle: ad_versions is the strongest signal. A page with 15+
-ad creatives is spending real money testing. Combined with Shopify + 14+
-days running = almost certainly a scaling dropshipping product.
+Design principle: ad_versions is the strongest signal. Industry consensus:
+  - <7 ads  = just testing, very risky to copy
+  - 14+ ads = minimum viable (advertiser has kept spending → profitable)
+  - 20+ ads = actively scaling, strong signal
+  - 30+ ads = proven winner being aggressively scaled, copy immediately
+
+Combined with Shopify + 14+ days running = almost certainly a scaling
+dropshipping product worth investigating.
 """
 
 from datetime import datetime, timezone
@@ -45,20 +50,24 @@ def score_product(w) -> tuple[float, dict]:
     b = {}
 
     # ── 1. Ad versions / creatives (3.0 pts) ─────────────────────────────────
-    # "X ads use this creative" — the single strongest dropshipping signal.
-    # 1–5   = just testing / single creative
-    # 6–14  = actively testing multiple angles
-    # 15–29 = scaling with budget
-    # 30+   = proven winner being aggressively scaled
+    # Active ad count — the single strongest dropshipping signal.
+    # Based on industry practice: nobody spends on 20+ ads unless profitable.
+    # <7    = just testing — very risky, skip
+    # 7–13  = early stage, still testing
+    # 14–19 = minimum viable — advertiser kept spending past break-even
+    # 20–29 = actively scaling with real budget
+    # 30+   = proven winner being aggressively scaled, copy immediately
     c = w.ad_count
     if c >= 30:
         b["ad_versions"] = 3.0
-    elif c >= 15:
+    elif c >= 20:
         b["ad_versions"] = 2.5
+    elif c >= 14:
+        b["ad_versions"] = 1.75
     elif c >= 7:
-        b["ad_versions"] = 1.5
+        b["ad_versions"] = 1.0
     elif c >= 4:
-        b["ad_versions"] = 0.75
+        b["ad_versions"] = 0.25
     else:
         b["ad_versions"] = 0.0
 
