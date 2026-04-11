@@ -132,20 +132,51 @@ try {
         var hasVideo = container.querySelector('video') !== null
                     || (container.innerHTML || '').indexOf('<video') !== -1;
 
-        /* CTA — capture text AND destination href */
+        /* CTA — capture text AND destination URL.
+           Strategy 1: l.php redirect links (Facebook wraps all external URLs this way).
+           Strategy 2: any href on a CTA-text element.
+           Strategy 3: any non-Facebook http link in the card (last resort). */
         var ctaButton = '';
         var ctaUrl = '';
+
+        // Strategy 1: grab all l.php links — these ARE the shop/store URLs
+        var lphpLinks = Array.prototype.slice.call(
+            container.querySelectorAll('a[href*="l.php"]'));
+        if (lphpLinks.length) {
+            ctaUrl = lphpLinks[0].href || '';
+        }
+
+        // Strategy 2: look for CTA-text buttons and grab their href or parent href
         var btns = Array.prototype.slice.call(
-            container.querySelectorAll('a,div[role="button"],button'));
+            container.querySelectorAll('a,div[role="button"],button,span[role="button"]'));
         btns.forEach(function(el) {
             var t = (el.textContent || '').trim().toLowerCase();
             if (CTA.indexOf(t) !== -1) {
                 ctaButton = (el.textContent || '').trim();
-                if (!ctaUrl && el.tagName === 'A' && el.href) {
-                    ctaUrl = el.href;
+                // Walk up to find enclosing <a>
+                if (!ctaUrl) {
+                    var node = el;
+                    for (var up = 0; up < 4; up++) {
+                        if (node && node.tagName === 'A' && node.href) {
+                            ctaUrl = node.href; break;
+                        }
+                        node = node && node.parentElement;
+                    }
                 }
             }
         });
+
+        // Strategy 3: any non-Facebook http link as fallback
+        if (!ctaUrl) {
+            var allLinks = Array.prototype.slice.call(container.querySelectorAll('a[href^="http"]'));
+            for (var li = 0; li < allLinks.length; li++) {
+                var h = allLinks[li].href || '';
+                if (h.indexOf('facebook.com') === -1 && h.indexOf('fbcdn.net') === -1
+                        && h.indexOf('fb.com') === -1) {
+                    ctaUrl = h; break;
+                }
+            }
+        }
 
         var lowerText = fullText.toLowerCase();
         var hasShopNow = ctaButton.toLowerCase().indexOf('shop') !== -1
@@ -573,12 +604,22 @@ class AdsLibraryBrowser:
                         // Multiple patterns Facebook uses for follower display
                         var patterns = [
                             /([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i,
-                            /followers?\s*[:\u00b7\u2022]?\s*([\d][\d,\.]*\s*[KkMm]?)/i,
-                            /([\d][\d,\.]*\s*[KkMm]?)\s*(?:people follow)/i
+                            /followers?\s*[:\u00b7\u2022·\-]?\s*([\d][\d,\.]*\s*[KkMm]?)/i,
+                            /([\d][\d,\.]*\s*[KkMm]?)\s*(?:people follow)/i,
+                            /([\d][\d,\.]*\s*[KkMm]?)\s*Followers/,
+                            /·\s*([\d][\d,\.]*\s*[KkMm]?)\s*(?:followers?|likes?)/i,
                         ];
                         for (var i = 0; i < patterns.length; i++) {
                             var m = t.match(patterns[i]);
                             if (m) return m[0];
+                        }
+                        // Also check meta / aria labels which sometimes contain counts
+                        var metas = Array.prototype.slice.call(
+                            document.querySelectorAll('[aria-label],[data-testid]'));
+                        for (var j = 0; j < metas.length; j++) {
+                            var al = (metas[j].getAttribute('aria-label') || '');
+                            var fm = al.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|likes?)/i);
+                            if (fm) return fm[0];
                         }
                         return '';
                     """) or ""
