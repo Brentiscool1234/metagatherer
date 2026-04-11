@@ -1083,8 +1083,7 @@ class FBAdsScraper:
             try:
                 store = getattr(w, "store_url", "") or ""
                 keywords = getattr(w, "keywords_matched", [])
-                fallback = max(keywords, key=len) if keywords else ""
-                return w, check_product_sourcing(store, fallback)
+                return w, check_product_sourcing(store, keywords)
             except Exception as e:
                 logger.debug(f"Sourcing check error for {getattr(w, 'page_name', '?')}: {e}")
                 return w, {}
