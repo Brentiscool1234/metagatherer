@@ -185,6 +185,40 @@ def _print_detail_card(w: WinningProduct, rank: int):
     lib_url = _ads_library_url(w.page_id)
     snapshot = getattr(w, "sample_snapshot_url", "") or ""
 
+    # Sourcing summary line
+    sourcing = getattr(w, "sourcing_data", {}) or {}
+    if sourcing.get("aliexpress_found"):
+        ali_min = sourcing.get("aliexpress_min_price", "?")
+        ali_max = sourcing.get("aliexpress_max_price", "?")
+        margin = sourcing.get("margin_pct")
+        be_roas = sourcing.get("break_even_roas")
+        store_p = sourcing.get("shopify_product_price")
+        confidence = sourcing.get("aliexpress_match_confidence", 0) or 0
+        conf_str = (
+            "[bright_green]high[/bright_green]" if confidence >= 0.75
+            else "[yellow]medium[/yellow]" if confidence >= 0.5
+            else "[dim]low[/dim]"
+        )
+        viable_color = "bright_green" if sourcing.get("margin_viable") else "red"
+        margin_str = (
+            f"[{viable_color}]{margin}% margin[/{viable_color}]"
+            f" | break-even ROAS: {be_roas}x"
+            if margin is not None else "margin: n/a"
+        )
+        sourcing_line = (
+            f"[bold]Sourcing:[/bold]  AliExpress ${ali_min}–${ali_max} "
+            f"({sourcing.get('aliexpress_suppliers', '?')} suppliers, "
+            f"confidence: {conf_str})"
+            f"\n           Store price: ${store_p or '?'}  →  {margin_str}"
+        )
+    elif sourcing.get("aliexpress_search_term"):
+        sourcing_line = (
+            f"[bold]Sourcing:[/bold]  [dim]AliExpress: not found "
+            f"(searched: {sourcing.get('aliexpress_search_term', '?')})[/dim]"
+        )
+    else:
+        sourcing_line = ""
+
     lines = [
         f"[bold]{_score_bar(score)}[/bold]",
         f"[dim]{'─' * 50}[/dim]",
@@ -196,6 +230,7 @@ def _print_detail_card(w: WinningProduct, rank: int):
          if snapshot else ""),
         f"[bold]Ads:[/bold]       {w.ad_count} active  (total on page: {w.total_page_ads})",
         f"[bold]Shopify:[/bold]   {shopify_str}",
+        sourcing_line,
         f"[bold]Platforms:[/bold] {', '.join(w.publisher_platforms) or '—'}",
         f"[bold]Ad dates:[/bold]  {', '.join(w.ad_start_dates[:5]) or '—'}{'...' if len(w.ad_start_dates) > 5 else ''}",
         f"[bold]Keywords:[/bold]  [italic]{', '.join(w.keywords_matched[:6]) or '—'}[/italic]",

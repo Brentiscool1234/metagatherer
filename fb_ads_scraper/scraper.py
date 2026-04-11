@@ -365,6 +365,7 @@ class WinningProduct:
             setattr(self, k, v)
 
     def to_dict(self) -> dict:
+        sourcing = getattr(self, "sourcing_data", {}) or {}
         return {
             "score": getattr(self, "score", 0.0),
             "page_name": self.page_name,
@@ -393,6 +394,19 @@ class WinningProduct:
             ),
             "publisher_platforms": ", ".join(self.publisher_platforms),
             "keywords_matched": ", ".join(self.keywords_matched),
+            # ── AliExpress sourcing ──────────────────────────────────────────
+            "shopify_product_title": sourcing.get("shopify_product_title", ""),
+            "store_price_usd": sourcing.get("shopify_product_price", ""),
+            "aliexpress_found": sourcing.get("aliexpress_found", ""),
+            "aliexpress_match_confidence": sourcing.get("aliexpress_match_confidence", ""),
+            "aliexpress_price_min": sourcing.get("aliexpress_min_price", ""),
+            "aliexpress_price_max": sourcing.get("aliexpress_max_price", ""),
+            "aliexpress_supplier_count": sourcing.get("aliexpress_suppliers", ""),
+            "aliexpress_search_term": sourcing.get("aliexpress_search_term", ""),
+            "margin_pct": sourcing.get("margin_pct", ""),
+            "gross_profit_usd": sourcing.get("gross_profit", ""),
+            "break_even_roas": sourcing.get("break_even_roas", ""),
+            "margin_viable": sourcing.get("margin_viable", ""),
         }
 
 
@@ -924,4 +938,49 @@ class FBAdsScraper:
                 f"  ✓ {w.page_name} | score={w.score} | {w.ad_count} ads | "
                 f"followers={w.page_followers} | Shopify={w.is_shopify}"
             )
+
+        # AliExpress sourcing check — run in parallel for top candidates only
+        # (no point checking everything; limits extra network overhead)
+        self._run_sourcing_check(winners[:25])
+
         return winners  # return all so output.py can split winners vs near-misses
+
+    def _run_sourcing_check(self, candidates: list) -> None:
+        """
+        Fetch AliExpress price + Shopify product info for each candidate in parallel.
+        Results are attached directly to the WinningProduct objects as sourcing_data.
+        Fails silently — sourcing data is supplementary, never blocks the scan.
+        """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .aliexpress import check_product_sourcing
+
+        if not candidates:
+            return
+
+        logger.info(f"AliExpress sourcing check for {len(candidates)} candidates...")
+
+        def _check(w):
+            try:
+                store = getattr(w, "store_url", "") or ""
+                keywords = getattr(w, "keywords_matched", [])
+                fallback = max(keywords, key=len) if keywords else ""
+                return w, check_product_sourcing(store, fallback)
+            except Exception as e:
+                logger.debug(f"Sourcing check error for {getattr(w, 'page_name', '?')}: {e}")
+                return w, {}
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = {pool.submit(_check, w): w for w in candidates}
+            for future in as_completed(futures):
+                try:
+                    w, sourcing = future.result()
+                    w.sourcing_data = sourcing
+                    if sourcing.get("aliexpress_found"):
+                        logger.info(
+                            f"  AliExpress: {w.page_name} → "
+                            f"${sourcing.get('aliexpress_min_price', '?')}–"
+                            f"${sourcing.get('aliexpress_max_price', '?')} "
+                            f"| margin {sourcing.get('margin_pct', '?')}%"
+                        )
+                except Exception:
+                    pass
