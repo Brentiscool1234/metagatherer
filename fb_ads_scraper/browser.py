@@ -635,6 +635,30 @@ class AdsLibraryBrowser:
                 except Exception:
                     break
 
+            # Fallback: type the page name into the Ads Library search box and
+            # read the follower count from the autocomplete "Advertisers" panel.
+            # This is the most reliable source — it always appears in the dropdown.
+            # We grab the page name from the already-loaded page DOM first.
+            if follower_count == 0:
+                try:
+                    page_name_from_dom = self._driver.execute_script(r"""
+                        var links = Array.prototype.slice.call(
+                            document.querySelectorAll('a[href*="facebook.com/"]'));
+                        for (var i = 0; i < links.length; i++) {
+                            var t = (links[i].textContent || '').trim();
+                            if (t.length >= 3 && t.length <= 80
+                                    && links[i].href.indexOf('/ads/library') === -1
+                                    && links[i].href.indexOf('/help') === -1) {
+                                return t;
+                            }
+                        }
+                        return '';
+                    """) or ""
+                except Exception:
+                    page_name_from_dom = ""
+                search_name = page_name_from_dom or page_id
+                follower_count = self.get_followers_from_autocomplete(search_name)
+
             # Scroll to collect all ads on this page
             no_new = 0
             for _ in range(12):   # was 15 × 2.0s; now 12 × 1.2s
@@ -705,3 +729,103 @@ class AdsLibraryBrowser:
                 time.sleep(0.8)   # was 1.5
             except Exception:
                 pass
+
+    def get_followers_from_autocomplete(self, page_name: str) -> int:
+        """
+        Type the page name into the Ads Library search box and read the follower
+        count from the 'Advertisers' autocomplete panel that appears.
+
+        This is the only reliable way to get follower counts — they appear in
+        the dropdown as "54K follow this" before you click through to the page.
+
+        Returns 0 on failure.
+        """
+        if not page_name or not self._driver:
+            return 0
+
+        try:
+            # Navigate to the Ads Library home (has the search box)
+            self._driver.get(ADS_LIBRARY_BASE)
+            time.sleep(1.5)
+            self._dismiss_dialogs()
+
+            # Find the search input — Facebook uses several different attributes
+            search_box = None
+            for selector in [
+                'input[placeholder*="Search ads"]',
+                'input[placeholder*="Search"]',
+                'input[type="search"]',
+                'input[aria-label*="Search"]',
+                'input[data-testid*="search"]',
+            ]:
+                try:
+                    els = self._driver.find_elements(By.CSS_SELECTOR, selector)
+                    for el in els:
+                        if el.is_displayed() and el.is_enabled():
+                            search_box = el
+                            break
+                except Exception:
+                    pass
+                if search_box:
+                    break
+
+            # Also try finding by XPath if CSS selectors failed
+            if not search_box:
+                try:
+                    els = self._driver.find_elements(
+                        By.XPATH, "//input[@type='text' or @type='search']"
+                    )
+                    for el in els:
+                        if el.is_displayed() and el.is_enabled():
+                            search_box = el
+                            break
+                except Exception:
+                    pass
+
+            if not search_box:
+                logger.debug(f"  Autocomplete: search box not found for {page_name!r}")
+                return 0
+
+            # Clear + type the page name to trigger the autocomplete
+            search_box.clear()
+            search_box.send_keys(page_name)
+            time.sleep(1.8)   # wait for the Advertisers panel to load
+
+            # Extract the follower count from the autocomplete dropdown
+            follower_text = self._driver.execute_script(r"""
+                var t = document.body.innerText || '';
+                // "54K follow this" — the Advertisers autocomplete format
+                var patterns = [
+                    /([\d][\d,\.]*\s*[KkMm]?)\s*follow this/i,
+                    /([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|likes?)/i,
+                    /·\s*([\d][\d,\.]*\s*[KkMm]?)\s*follow/i,
+                ];
+                for (var i = 0; i < patterns.length; i++) {
+                    var m = t.match(patterns[i]);
+                    if (m) return m[0];
+                }
+                // Also scan aria-labels on suggestion items
+                var items = Array.prototype.slice.call(
+                    document.querySelectorAll('[role="option"],[role="listitem"]'));
+                for (var j = 0; j < items.length; j++) {
+                    var it = (items[j].innerText || '');
+                    var fm = it.match(/([\d][\d,\.]*\s*[KkMm]?)\s*follow/i);
+                    if (fm) return fm[0];
+                }
+                return '';
+            """) or ""
+
+            if follower_text:
+                count = parse_follower_count(follower_text)
+                logger.debug(
+                    f"  Autocomplete followers {page_name!r}: "
+                    f"{follower_text!r} → {count}"
+                )
+                return count
+
+            logger.debug(f"  Autocomplete: no follower text found for {page_name!r}")
+            return 0
+
+        except Exception as e:
+            logger.debug(f"  Autocomplete follower lookup failed ({page_name!r}): {e}")
+            return 0
