@@ -37,7 +37,8 @@ MONTH_MAP = {
 
 def parse_follower_count(text: str) -> int:
     t = text.lower().replace(",", "").strip()
-    m = re.search(r"([\d.]+)\s*([km])?\s*(?:likes?|followers?)", t)
+    # Covers: "54K follow this", "140.2K followers", "818 likes", "7.8K follow this"
+    m = re.search(r"([\d.]+)\s*([km])?\s*(?:follow(?:ers?)?(?:\s+this)?|likes?)", t)
     if not m:
         return 0
     try:
@@ -599,10 +600,16 @@ class AdsLibraryBrowser:
             _FOLLOWER_JS = r"""
                 var t = document.body.innerText || '';
                 var patterns = [
+                    // "54K follow this" — Ads Library advertiser panel format
+                    /([\d][\d,\.]*\s*[KkMm]?)\s*follow this/i,
+                    // "140.2K followers" / "818 likes"
                     /([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i,
+                    // "followers: 54K"
                     /followers?\s*[:\u00b7\u2022·\-]?\s*([\d][\d,\.]*\s*[KkMm]?)/i,
+                    // "people follow"
                     /([\d][\d,\.]*\s*[KkMm]?)\s*(?:people follow)/i,
-                    /·\s*([\d][\d,\.]*\s*[KkMm]?)\s*(?:followers?|likes?)/i,
+                    // "· 54K followers"
+                    /·\s*([\d][\d,\.]*\s*[KkMm]?)\s*(?:follow(?:ers?)?|likes?)/i,
                 ];
                 for (var i = 0; i < patterns.length; i++) {
                     var m = t.match(patterns[i]);
@@ -612,7 +619,7 @@ class AdsLibraryBrowser:
                     document.querySelectorAll('[aria-label],[data-testid]'));
                 for (var j = 0; j < metas.length; j++) {
                     var al = (metas[j].getAttribute('aria-label') || '');
-                    var fm = al.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|likes?)/i);
+                    var fm = al.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(follow(?:ers?)?|likes?)/i);
                     if (fm) return fm[0];
                 }
                 return '';

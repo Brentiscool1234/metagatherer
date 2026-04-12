@@ -479,8 +479,10 @@ class WinningProduct:
             "keywords_matched": ", ".join(self.keywords_matched),
             # ── AliExpress sourcing ──────────────────────────────────────────
             "shopify_product_title": sourcing.get("shopify_product_title", ""),
+            "shopify_product_url": sourcing.get("shopify_product_url", ""),
             "store_price_usd": sourcing.get("shopify_product_price", ""),
             "aliexpress_found": sourcing.get("aliexpress_found", ""),
+            "aliexpress_product_url": sourcing.get("aliexpress_product_url", ""),
             "aliexpress_match_confidence": sourcing.get("aliexpress_match_confidence", ""),
             "aliexpress_price_min": sourcing.get("aliexpress_min_price", ""),
             "aliexpress_price_max": sourcing.get("aliexpress_max_price", ""),

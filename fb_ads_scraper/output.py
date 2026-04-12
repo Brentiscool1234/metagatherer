@@ -205,11 +205,17 @@ def _print_detail_card(w: WinningProduct, rank: int):
             f" | break-even ROAS: {be_roas}x"
             if margin is not None else "margin: n/a"
         )
+        ali_url = sourcing.get("aliexpress_product_url", "")
+        shop_url = sourcing.get("shopify_product_url", "")
+        ali_link = (f" [cyan][link={ali_url}]↗ AliExpress listing[/link][/cyan]"
+                    if ali_url else "")
+        shop_link = (f"  [cyan][link={shop_url}]↗ product page[/link][/cyan]"
+                     if shop_url else "")
         sourcing_line = (
             f"[bold]Sourcing:[/bold]  AliExpress ${ali_min}–${ali_max} "
             f"({sourcing.get('aliexpress_suppliers', '?')} suppliers, "
-            f"confidence: {conf_str})"
-            f"\n           Store price: ${store_p or '?'}  →  {margin_str}"
+            f"confidence: {conf_str}){ali_link}"
+            f"\n           Store price: ${store_p or '?'}{shop_link}  →  {margin_str}"
         )
     elif sourcing.get("aliexpress_search_term"):
         sourcing_line = (

@@ -88,10 +88,15 @@ def get_shopify_product_info(store_url: str, timeout: int = 8) -> dict:
                     except (ValueError, TypeError):
                         pass
 
-        first_title = products[0].get("title", "")
+        first_product = products[0]
+        first_title = first_product.get("title", "")
+        first_handle = first_product.get("handle", "")
+        product_url = f"{base}/products/{first_handle}" if first_handle else ""
+
         result = {
             "title": first_title,
             "price": round(min(prices), 2) if prices else None,
+            "product_url": product_url,
             "products": [p.get("title", "") for p in products[:5]],
         }
         _shopify_cache[cache_key] = result
@@ -182,7 +187,7 @@ def search_aliexpress(search_term: str, timeout: int = 12) -> dict:
             return result
 
         html = resp.text
-        prices = _extract_prices_from_html(html)
+        prices, item_urls = _extract_prices_from_html(html)
 
         # Keyword overlap: how many search words appear in the page?
         # High overlap = AliExpress definitely has this product category.
@@ -198,6 +203,7 @@ def search_aliexpress(search_term: str, timeout: int = 12) -> dict:
                 "supplier_count": len(prices_sorted),
                 "match_confidence": match_confidence,
                 "search_term": search_term,
+                "item_url": item_urls[0] if item_urls else "",
             }
         else:
             # Even without price data, high keyword overlap means product exists
@@ -205,6 +211,7 @@ def search_aliexpress(search_term: str, timeout: int = 12) -> dict:
                 "found": match_confidence >= 0.7,
                 "match_confidence": match_confidence,
                 "search_term": search_term,
+                "item_url": item_urls[0] if item_urls else "",
             }
 
         _aliexpress_cache[search_term] = result
@@ -217,12 +224,14 @@ def search_aliexpress(search_term: str, timeout: int = 12) -> dict:
         return result
 
 
-def _extract_prices_from_html(html: str) -> list:
+def _extract_prices_from_html(html: str) -> tuple[list, list]:
     """
     Try multiple extraction patterns on the AliExpress search page HTML.
+    Returns (prices: list[float], item_urls: list[str]).
     AliExpress embeds product data in several formats; we try them all.
     """
     prices = []
+    item_urls = []
 
     # ── Pattern 1: window.runParams embedded JSON ────────────────────────────
     # AliExpress server-side renders product data into window.runParams for SEO
@@ -250,13 +259,29 @@ def _extract_prices_from_html(html: str) -> list:
                         v = float(str(raw).replace(",", "."))
                         if 0.30 <= v <= 300:
                             prices.append(v)
+                            # Extract item URL — productId or itemId field
+                            item_id = (item.get("productId") or item.get("itemId")
+                                       or item.get("id") or "")
+                            if item_id and not item_urls:
+                                item_urls.append(
+                                    f"https://www.aliexpress.com/item/{item_id}.html"
+                                )
                     except (ValueError, TypeError):
                         pass
         except (json.JSONDecodeError, AttributeError, KeyError):
             pass
 
     if prices:
-        return prices
+        # Also try regex URL extraction as a fallback for item URLs
+        if not item_urls:
+            url_matches = re.findall(
+                r'https://www\.aliexpress\.com/item/(\d+)\.html', html
+            )
+            if url_matches:
+                item_urls.append(
+                    f"https://www.aliexpress.com/item/{url_matches[0]}.html"
+                )
+        return prices, item_urls
 
     # ── Pattern 2: JSON salePrice fields inline ──────────────────────────────
     for m in re.finditer(
@@ -270,7 +295,10 @@ def _extract_prices_from_html(html: str) -> list:
             pass
 
     if prices:
-        return prices
+        url_matches = re.findall(r'https://www\.aliexpress\.com/item/(\d+)\.html', html)
+        if url_matches:
+            item_urls.append(f"https://www.aliexpress.com/item/{url_matches[0]}.html")
+        return prices, item_urls
 
     # ── Pattern 3: generic "price" JSON fields (last resort) ────────────────
     for m in re.finditer(r'"price"\s*:\s*"?([\d.]+)"?', html):
@@ -281,7 +309,11 @@ def _extract_prices_from_html(html: str) -> list:
         except ValueError:
             pass
 
-    return prices
+    url_matches = re.findall(r'https://www\.aliexpress\.com/item/(\d+)\.html', html)
+    if url_matches:
+        item_urls.append(f"https://www.aliexpress.com/item/{url_matches[0]}.html")
+
+    return prices, item_urls
 
 
 # ── Margin calculator ─────────────────────────────────────────────────────────
@@ -347,8 +379,10 @@ def check_product_sourcing(store_url: str, fallback_keyword: str) -> dict:
     """
     result = {
         "shopify_product_title": "",
+        "shopify_product_url": "",
         "shopify_product_price": None,
         "aliexpress_found": False,
+        "aliexpress_product_url": "",
         "aliexpress_match_confidence": None,
         "aliexpress_min_price": None,
         "aliexpress_max_price": None,
@@ -372,6 +406,8 @@ def check_product_sourcing(store_url: str, fallback_keyword: str) -> dict:
         result["shopify_product_title"] = product_title
     if store_price:
         result["shopify_product_price"] = store_price
+    if shopify_info.get("product_url"):
+        result["shopify_product_url"] = shopify_info["product_url"]
 
     # Step 2: pick best AliExpress search term
     if product_title:
@@ -393,6 +429,8 @@ def check_product_sourcing(store_url: str, fallback_keyword: str) -> dict:
     if search_term:
         ali = search_aliexpress(search_term)
         result["aliexpress_match_confidence"] = ali.get("match_confidence")
+        if ali.get("item_url"):
+            result["aliexpress_product_url"] = ali["item_url"]
         if ali.get("found"):
             result["aliexpress_found"] = True
             result["aliexpress_min_price"] = ali.get("min_price")
