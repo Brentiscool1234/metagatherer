@@ -535,6 +535,7 @@ class FBAdsScraper:
         self._seen_keys: set[str] = set()
         self._searched_keywords: set[str] = set()
         self._seen_winner_ids: set[str] = set()
+        self._visited_page_ids: set[str] = set()   # pages already Phase-2-crawled
 
         # Load previous run's state unless reset was requested
         self._resume_queue: list[tuple[str, int]] = []
@@ -548,6 +549,7 @@ class FBAdsScraper:
                 self._searched_keywords = saved["searched_keywords"]
                 self._resume_queue = saved["queue"]
                 self._seen_winner_ids = saved.get("seen_winner_ids", set())
+                self._visited_page_ids = saved.get("visited_page_ids", set())
                 logger.info(
                     f"Resuming saved state — {state_summary(saved)}"
                 )
@@ -561,6 +563,7 @@ class FBAdsScraper:
             "page_followers": self._page_followers,
             "seen_keys": self._seen_keys,
             "seen_winner_ids": self._seen_winner_ids,
+            "visited_page_ids": self._visited_page_ids,
         }
 
     def run(self, extra_keywords: list[str] = None) -> list[WinningProduct]:
@@ -814,6 +817,13 @@ class FBAdsScraper:
                 # Skip supplier marketplace pages entirely
                 if any(term in pid.lower() for term in _PLATFORM_BLOCKLIST):
                     continue
+
+                # Skip pages already crawled in a previous run, UNLESS they were
+                # winners or near-misses (worth rechecking for new/grown ad counts)
+                if pid in self._visited_page_ids and pid not in self._seen_winner_ids:
+                    logger.debug(f"  Phase 2 skip {pid}: already crawled, no prior win/near-miss")
+                    continue
+
                 fan_count = self._page_followers.get(pid, self._avg_followers(existing_ads))
                 # Skip pages obviously outside follower range
                 if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
@@ -838,6 +848,7 @@ class FBAdsScraper:
                     self._page_ads[pid].append(ad)
                     added += 1
 
+                self._visited_page_ids.add(pid)
                 total_now = len(self._page_ads[pid])
                 logger.info(
                     f"  {pid}: {total_now} total ads "

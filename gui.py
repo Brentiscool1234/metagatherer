@@ -175,6 +175,10 @@ class App(tk.Tk):
 
         self._check(left, "Keep scanning until winner", self.v_until_winner)
 
+        tk.Button(left, text="🗑  Clear ban list", font=FONT, bg=BG3, fg=FG,
+                  activebackground=YELLOW, bd=0, pady=4, cursor="hand2",
+                  command=self._clear_ban_list).pack(fill="x", pady=(4, 2))
+
         btn_row1 = tk.Frame(left, bg=BG)
         btn_row1.pack(fill="x", pady=(4, 2))
 
@@ -442,6 +446,33 @@ class App(tk.Tk):
         self._set_buttons("idle")
         self.status_var.set("Stopping…")
         self._append("DIM", "⏹  Stop requested — exporting results and shutting down...\n")
+
+    def _clear_ban_list(self):
+        """Clear visited pages + searched keywords from state without losing ad data."""
+        if self._running:
+            self._append("WARNING", "Stop the scan before clearing the ban list.\n")
+            return
+        state_file = "scraper_state.json"
+        if not os.path.exists(state_file):
+            self._append("DIM", "No state file found — nothing to clear.\n")
+            return
+        try:
+            with open(state_file) as f:
+                data = json.load(f)
+            cleared_pages = len(data.get("visited_page_ids", []))
+            cleared_kws   = len(data.get("searched_keywords", []))
+            data["visited_page_ids"]  = []
+            data["searched_keywords"] = []
+            with open(state_file, "w") as f:
+                json.dump(data, f, ensure_ascii=False)
+            self._append(
+                "SUCCESS",
+                f"✓ Ban list cleared — {cleared_pages} visited pages and "
+                f"{cleared_kws} searched keywords reset.\n"
+                f"  (Collected ad data and winner history kept.)\n"
+            )
+        except Exception as e:
+            self._append("ERROR", f"Failed to clear ban list: {e}\n")
 
     # ── TikTok login ─────────────────────────────────────────────────────────
 
