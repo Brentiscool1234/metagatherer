@@ -101,12 +101,14 @@ def _setup_logging(verbose: bool):
               help="Also scan TikTok for the same keywords (50k views, last 30 days).")
 @click.option("--tiktok-login", is_flag=True, default=False,
               help="Open a browser to log in to TikTok and save session cookies, then exit.")
+@click.option("--until-winner", is_flag=True, default=False,
+              help="Keep searching (up to 150 total keywords) until at least one winner is found.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
 def main(
     countries, days, min_ads, min_followers, max_followers,
     niche, keywords, max_keywords, keyword_depth, max_ads_per_keyword,
     video_only, require_shop_now, headless, output, no_csv,
-    facebook, tiktok, tiktok_login, state_file, reset, verbose,
+    facebook, tiktok, tiktok_login, state_file, reset, verbose, until_winner,
 ):
     """MetaGatherer: Find winning ecommerce products in the Facebook Ads Library."""
     _setup_logging(verbose)
@@ -193,7 +195,43 @@ def main(
             reset=reset,
             niche=niche or None,
         )
-        all_products = scraper.run(extra_keywords=list(keywords) if keywords else None)
+        _UNTIL_WINNER_CAP = 150   # hard cap on total keywords when --until-winner is set
+        _EXTEND_BY        = 30    # extra keywords per extension round
+        _extra_kws = list(keywords) if keywords else None
+
+        all_products = scraper.run(extra_keywords=_extra_kws)
+
+        if until_winner:
+            from fb_ads_scraper.analysis import extract_new_keywords
+            while True:
+                _winners_so_far = [
+                    w for w in all_products if getattr(w, "score", 0) >= WINNER_THRESHOLD
+                ]
+                if _winners_so_far:
+                    break
+                _searched = len(scraper._searched_keywords)
+                if _searched >= _UNTIL_WINNER_CAP:
+                    console.print(
+                        f"[yellow]Searched {_searched} keywords "
+                        f"({_UNTIL_WINNER_CAP} cap) — no winner found.[/yellow]"
+                    )
+                    break
+                # Generate new keywords from all collected ad bodies
+                _all_ads = [a for ads in scraper._page_ads.values() for a in ads]
+                _new_kws = extract_new_keywords(
+                    _all_ads, scraper._searched_keywords, max_new=_EXTEND_BY
+                )
+                if not _new_kws:
+                    console.print("[yellow]No new keywords to explore — stopping.[/yellow]")
+                    break
+                scraper.max_keywords = min(_searched + _EXTEND_BY, _UNTIL_WINNER_CAP)
+                console.print(
+                    f"[cyan]No winners yet ({_searched} keywords searched). "
+                    f"Extending to {scraper.max_keywords} with "
+                    f"{len(_new_kws)} new keywords — continuing...[/cyan]"
+                )
+                all_products = scraper.run(extra_keywords=_new_kws)
+
         tiktok_keywords = scraper._searched_keywords
 
         if video_only:
