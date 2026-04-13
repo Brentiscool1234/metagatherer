@@ -936,9 +936,11 @@ class FBAdsScraper:
                 logger.debug(f"  SKIP {page_id}: {fan_count} followers outside range")
                 stats["follower_range"] += 1; continue
 
-            recent = [a for a in ads if _within_days(a, max(self.days * 10, 90))]
+            recent = [a for a in ads if _within_days(a, self.days)]
             if not recent:
-                recent = ads
+                logger.debug(f"  SKIP {page_id}: no ads within last {self.days} days")
+                stats["no_recent"] += 1
+                continue
 
             for cluster in cluster_page_ads(recent):
                 total_versions = sum(a.get("_ad_versions", 1) for a in cluster)

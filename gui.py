@@ -129,11 +129,13 @@ class App(tk.Tk):
         self.v_max_fol  = self._row_spin(left,  "Max followers", 100, 500000, 2000)
 
         self._section(left, "Options")
-        self.v_headless = tk.BooleanVar(value=False)
-        self.v_reset    = tk.BooleanVar(value=False)
-        self.v_no_csv   = tk.BooleanVar(value=False)
+        self.v_headless     = tk.BooleanVar(value=False)
+        self.v_reset        = tk.BooleanVar(value=False)
+        self.v_no_csv       = tk.BooleanVar(value=False)
+        self.v_until_winner = tk.BooleanVar(value=False)
         self._check(left, "Headless (no visible browser)", self.v_headless)
         self._check(left, "Reset saved state",              self.v_reset)
+        self._check(left, "Keep scanning until winner",     self.v_until_winner)
 
         # ── API key ───────────────────────────────────────────────────────────
         self._section(left, "AI Expert (Anthropic)")
@@ -497,9 +499,10 @@ class App(tk.Tk):
             "--min-followers", str(self.v_min_fol.get()),
             "--max-followers", str(self.v_max_fol.get()),
         ]
-        if self.v_headless.get(): cmd.append("--headless")
-        if self.v_reset.get():    cmd.append("--reset")
-        if self.v_no_csv.get():   cmd.append("--no-csv")
+        if self.v_headless.get():     cmd.append("--headless")
+        if self.v_reset.get():        cmd.append("--reset")
+        if self.v_no_csv.get():       cmd.append("--no-csv")
+        if self.v_until_winner.get(): cmd.append("--until-winner")
         out_path = self.v_output.get().strip()
         if out_path: cmd += ["--output", out_path]
 
