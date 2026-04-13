@@ -65,8 +65,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("MetaGatherer")
-        self.geometry("1100x780")
-        self.minsize(900, 640)
+        self.geometry("1100x900")
+        self.minsize(900, 780)
         self.configure(bg=BG)
 
         self._running   = False
@@ -181,13 +181,13 @@ class App(tk.Tk):
         self.btn_start = tk.Button(
             btn_row1, text="▶  START", font=FONT_BOLD,
             bg=GREEN, fg="white", activebackground="#388e3c",
-            bd=0, pady=8, cursor="hand2", command=self._start)
+            bd=0, pady=6, cursor="hand2", command=self._start)
         self.btn_start.pack(side="left", expand=True, fill="x", padx=(0, 2))
 
         self.btn_pause = tk.Button(
             btn_row1, text="⏸  PAUSE", font=FONT_BOLD,
             bg=YELLOW, fg="#111", activebackground="#f9a825",
-            bd=0, pady=8, cursor="hand2", command=self._pause,
+            bd=0, pady=6, cursor="hand2", command=self._pause,
             state="disabled")
         self.btn_pause.pack(side="left", expand=True, fill="x", padx=(2, 0))
 
@@ -197,14 +197,14 @@ class App(tk.Tk):
         self.btn_continue = tk.Button(
             btn_row2, text="▶  CONTINUE", font=FONT_BOLD,
             bg=ACCENT2, fg="white", activebackground="#0096b7",
-            bd=0, pady=8, cursor="hand2", command=self._resume,
+            bd=0, pady=6, cursor="hand2", command=self._resume,
             state="disabled")
         self.btn_continue.pack(side="left", expand=True, fill="x", padx=(0, 2))
 
         self.btn_stop = tk.Button(
             btn_row2, text="⏹  STOP", font=FONT_BOLD,
             bg=ACCENT, fg="white", activebackground="#c73652",
-            bd=0, pady=8, cursor="hand2", command=self._stop,
+            bd=0, pady=6, cursor="hand2", command=self._stop,
             state="disabled")
         self.btn_stop.pack(side="left", expand=True, fill="x", padx=(2, 0))
 
@@ -280,7 +280,7 @@ class App(tk.Tk):
     # ── Widget helpers ───────────────────────────────────────────────────────
 
     def _section(self, parent, text: str):
-        tk.Frame(parent, bg=BG3, height=1).pack(fill="x", pady=(10, 3))
+        tk.Frame(parent, bg=BG3, height=1).pack(fill="x", pady=(7, 2))
         tk.Label(parent, text=text.upper(), font=("Segoe UI", 8, "bold"),
                  bg=BG, fg=ACCENT2).pack(anchor="w")
 
