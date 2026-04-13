@@ -35,6 +35,7 @@ def save_state(path: str, state: dict) -> None:
             },
             "page_followers": state["page_followers"],
             "seen_keys": sorted(state["seen_keys"]),
+            "seen_winner_ids": sorted(state.get("seen_winner_ids", set())),
         }
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, default=str)
@@ -70,6 +71,7 @@ def load_state(path: str) -> dict | None:
             "page_keywords": page_keywords,
             "page_followers": {str(k): int(v) for k, v in raw.get("page_followers", {}).items()},
             "seen_keys": set(raw.get("seen_keys", [])),
+            "seen_winner_ids": set(raw.get("seen_winner_ids", [])),
         }
     except Exception as e:
         logger.warning(f"Could not load state from {path}: {e} — starting fresh.")

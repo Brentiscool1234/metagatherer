@@ -534,6 +534,7 @@ class FBAdsScraper:
         self._page_followers: dict[str, int] = {}
         self._seen_keys: set[str] = set()
         self._searched_keywords: set[str] = set()
+        self._seen_winner_ids: set[str] = set()
 
         # Load previous run's state unless reset was requested
         self._resume_queue: list[tuple[str, int]] = []
@@ -546,18 +547,20 @@ class FBAdsScraper:
                 self._seen_keys = saved["seen_keys"]
                 self._searched_keywords = saved["searched_keywords"]
                 self._resume_queue = saved["queue"]
+                self._seen_winner_ids = saved.get("seen_winner_ids", set())
                 logger.info(
                     f"Resuming saved state — {state_summary(saved)}"
                 )
 
-    def _snapshot_state(self, queue: deque) -> dict:
+    def _snapshot_state(self, queue=None) -> dict:
         return {
             "searched_keywords": self._searched_keywords,
-            "queue": list(queue),
+            "queue": list(queue) if queue is not None else [],
             "page_ads": self._page_ads,
             "page_keywords": self._page_keywords,
             "page_followers": self._page_followers,
             "seen_keys": self._seen_keys,
+            "seen_winner_ids": self._seen_winner_ids,
         }
 
     def run(self, extra_keywords: list[str] = None) -> list[WinningProduct]:
@@ -654,7 +657,11 @@ class FBAdsScraper:
                         queue.appendleft((kw, 0))
                 logger.info(f"  Resuming with {len(queue)} keyword(s) in queue.")
             else:
-                queue = deque((kw, 0) for kw in seeds)
+                all_seeds = list(seeds) + list(extra_keywords or [])
+                queue = deque(
+                    (kw, 0) for kw in all_seeds
+                    if kw not in self._searched_keywords
+                )
 
             total = len(self._searched_keywords)
             all_bodies_for_ai: list[str] = []
@@ -889,6 +896,11 @@ class FBAdsScraper:
             # Filter blocklisted platforms — catches entries loaded from old state files
             if any(term in page_id.lower() for term in _PLATFORM_BLOCKLIST):
                 stats["blocked"] += 1; continue
+
+            # Skip pages already exported as winners in a previous run
+            if page_id in self._seen_winner_ids:
+                logger.debug(f"  SKIP {page_id}: already listed as winner in a previous run")
+                continue
 
             # Find the best page_name: skip junk names like "Log in" from login wall
             page_name = ""

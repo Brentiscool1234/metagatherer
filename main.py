@@ -128,7 +128,7 @@ def main(
         print_summary_banner, print_results_table, export_csv,
         print_tiktok_results, export_tiktok_csv,
     )
-    from fb_ads_scraper.state import load_state, state_summary, DEFAULT_STATE_FILE
+    from fb_ads_scraper.state import load_state, save_state, state_summary, DEFAULT_STATE_FILE
     import os
 
     console.rule("[bold cyan]MetaGatherer — FB Ads Library Scanner[/bold cyan]")
@@ -213,6 +213,10 @@ def main(
             if output is None:
                 output = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
             export_csv(exportable, output)
+            # Record exported page IDs so future runs won't re-list them
+            for w in exportable:
+                scraper._seen_winner_ids.add(w.page_id)
+            save_state(state_file, scraper._snapshot_state())
     else:
         console.print("[dim]Facebook scan skipped (--no-facebook).[/dim]\n")
         # Use seed keywords for TikTok when Facebook is skipped
