@@ -847,12 +847,22 @@ class FBAdsScraper:
         except KeyboardInterrupt:
             logger.warning("Interrupted — evaluating partial results...")
 
-        # Pre-check all CTA URLs for Shopify in parallel (HTTP, no browser needed)
+        # Pre-check Shopify only for pages that have >12 active ads within the
+        # lookback window — no point hitting HTTP for pages that will be filtered out.
+        _SHOPIFY_AD_THRESHOLD = 12
         shopify_cache: dict[str, tuple[bool, str]] = {}
         try:
             from .shopify import batch_check_shopify, decode_facebook_redirect as _dfr
             all_real_urls: set[str] = set()
-            for _ads in self._page_ads.values():
+            for pid, _ads in self._page_ads.items():
+                # Count recent active ad versions for this page
+                recent_versions = sum(
+                    a.get("_ad_versions", 1)
+                    for a in _ads
+                    if _within_days(a, self.days)
+                )
+                if recent_versions <= _SHOPIFY_AD_THRESHOLD:
+                    continue  # too few recent ads — skip Shopify check entirely
                 for _ad in _ads:
                     cta = _ad.get("_cta_url", "")
                     if cta:
@@ -862,7 +872,8 @@ class FBAdsScraper:
             if all_real_urls:
                 logger.info(
                     f"Pre-checking {len(all_real_urls)} store URLs for Shopify "
-                    f"(multithreaded HTTP)..."
+                    f"(pages with >{_SHOPIFY_AD_THRESHOLD} active ads in last "
+                    f"{self.days}d, multithreaded HTTP)..."
                 )
                 shopify_cache = batch_check_shopify(all_real_urls)
                 confirmed = sum(1 for v in shopify_cache.values() if v[0])
