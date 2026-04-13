@@ -63,7 +63,7 @@ def _setup_logging(verbose: bool):
 @click.command(context_settings={"help_option_names": ["-h", "--help"]})
 @click.option("--countries", "-c", multiple=True, default=["US"], show_default=True,
               help="Target country codes (repeatable: -c US -c GB)")
-@click.option("--days", "-d", default=30, show_default=True, type=int,
+@click.option("--days", "-d", default=7, show_default=True, type=int,
               help="Lookback window in days for ad start dates.")
 @click.option("--min-ads", default=5, show_default=True, type=int,
               help="Minimum active ads per product cluster.")
