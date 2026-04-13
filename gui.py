@@ -135,7 +135,6 @@ class App(tk.Tk):
         self.v_until_winner = tk.BooleanVar(value=False)
         self._check(left, "Headless (no visible browser)", self.v_headless)
         self._check(left, "Reset saved state",              self.v_reset)
-        self._check(left, "Keep scanning until winner",     self.v_until_winner)
 
         # ── API key ───────────────────────────────────────────────────────────
         self._section(left, "AI Expert (Anthropic)")
@@ -173,6 +172,8 @@ class App(tk.Tk):
 
         # ── Control buttons ───────────────────────────────────────────────────
         self._section(left, "Controls")
+
+        self._check(left, "Keep scanning until winner", self.v_until_winner)
 
         btn_row1 = tk.Frame(left, bg=BG)
         btn_row1.pack(fill="x", pady=(4, 2))
