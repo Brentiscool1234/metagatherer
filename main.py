@@ -104,11 +104,14 @@ def _setup_logging(verbose: bool):
 @click.option("--until-winner", is_flag=True, default=False,
               help="Keep searching (up to 150 total keywords) until at least one winner is found.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
+@click.option("--discord-webhook", default=None, envvar="DISCORD_WEBHOOK_URL",
+              help="Discord webhook URL for winner notifications (or set DISCORD_WEBHOOK_URL in .env).")
 def main(
     countries, days, min_ads, min_followers, max_followers,
     niche, keywords, max_keywords, keyword_depth, max_ads_per_keyword,
     video_only, require_shop_now, headless, output, no_csv,
     facebook, tiktok, tiktok_login, state_file, reset, verbose, until_winner,
+    discord_webhook,
 ):
     """MetaGatherer: Find winning ecommerce products in the Facebook Ads Library."""
     _setup_logging(verbose)
@@ -255,6 +258,39 @@ def main(
             for w in exportable:
                 scraper._seen_winner_ids.add(w.page_id)
             save_state(state_file, scraper._snapshot_state())
+
+        # ── Save scan history to SQLite ────────────────────────────────────────
+        try:
+            from fb_ads_scraper.db import save_scan, save_winners
+            _scan_id = save_scan(
+                niche=niche or "",
+                keywords_count=len(scraper._searched_keywords),
+                ads_count=len(scraper._seen_keys),
+                pages_count=len(scraper._page_ads),
+                winner_count=len(winners),
+                near_miss_count=max(0, len(exportable) - len(winners)),
+            )
+            if _scan_id > 0:
+                save_winners(_scan_id, exportable, NEAR_MISS_THRESHOLD)
+                logger.info(f"Scan history saved to DB (scan_id={_scan_id})")
+        except Exception as _dbe:
+            logger.debug(f"DB save failed: {_dbe}")
+
+        # ── Discord winner notifications ────────────────────────────────────────
+        _webhook = discord_webhook or os.environ.get("DISCORD_WEBHOOK_URL", "")
+        if _webhook and winners:
+            try:
+                from fb_ads_scraper.discord_notify import notify_winner
+                for _w in winners:
+                    notify_winner(_webhook, _w, is_winner=True)
+                _near = [w for w in exportable if getattr(w, "score", 0) < WINNER_THRESHOLD]
+                for _w in _near[:3]:
+                    notify_winner(_webhook, _w, is_winner=False)
+                logger.info(
+                    f"Discord: notified {len(winners)} winner(s) + {min(len(_near),3)} near-miss(es)"
+                )
+            except Exception as _de:
+                logger.debug(f"Discord notify failed: {_de}")
     else:
         console.print("[dim]Facebook scan skipped (--no-facebook).[/dim]\n")
         # Use seed keywords for TikTok when Facebook is skipped

@@ -155,6 +155,15 @@ class App(tk.Tk):
                                    bg=BG, fg=FG_DIM)
         self.api_status.pack(anchor="w")
         self._refresh_api_status()
+        wh_row = tk.Frame(left, bg=BG)
+        wh_row.pack(fill="x", pady=2)
+        tk.Label(wh_row, text="Discord WH", font=FONT, bg=BG, fg=FG,
+                 width=8, anchor="w").pack(side="left")
+        self.v_discord_wh = tk.StringVar(value=os.environ.get("DISCORD_WEBHOOK_URL", ""))
+        tk.Entry(wh_row, textvariable=self.v_discord_wh, font=FONT,
+                 bg=BG2, fg=FG, insertbackground=FG, bd=0,
+                 highlightbackground=BG3, highlightthickness=1,
+                 show="*").pack(side="left", expand=True, fill="x")
         self._check(left, "Skip CSV export",                self.v_no_csv)
 
         out_row = tk.Frame(left, bg=BG)
@@ -535,6 +544,9 @@ class App(tk.Tk):
         if self.v_reset.get():        cmd.append("--reset")
         if self.v_no_csv.get():       cmd.append("--no-csv")
         if self.v_until_winner.get(): cmd.append("--until-winner")
+        wh = self.v_discord_wh.get().strip()
+        if wh:
+            cmd += ["--discord-webhook", wh]
         out_path = self.v_output.get().strip()
         if out_path: cmd += ["--output", out_path]
 

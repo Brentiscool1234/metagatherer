@@ -730,6 +730,45 @@ class FBAdsScraper:
                 # Update saturation density for this keyword
                 self._keyword_page_density[keyword] = len(_pages_this_keyword)
 
+                # ── Hot-check: immediately visit pages that look like winners ─────────
+                # If a page already has >= 15 recent ads after this keyword, do an
+                # early Phase-2 browser visit so we don't wait until all keywords finish.
+                # Capped at 2 hot-checks per keyword to limit speed impact.
+                if browser and not _api_client:
+                    _HOT_THRESHOLD = 15
+                    _hot_checked = 0
+                    for _hot_pid in list(_pages_this_keyword):
+                        if _hot_checked >= 2:
+                            break
+                        if _hot_pid in self._visited_page_ids and _hot_pid not in self._seen_winner_ids:
+                            continue
+                        _hot_ads = self._page_ads.get(_hot_pid, [])
+                        _hot_recent = [a for a in _hot_ads if _within_days(a, self.days)]
+                        if len(_hot_recent) < _HOT_THRESHOLD:
+                            continue
+                        logger.info(
+                            f"  🔥 Hot-check: page {_hot_pid} has {len(_hot_recent)} recent ads "
+                            f"— visiting now for full count"
+                        )
+                        try:
+                            _fan, _page_ads_now = browser.get_page_ads(_hot_pid, max_ads=200)
+                            if _fan > 0:
+                                self._page_followers[_hot_pid] = _fan
+                            for _raw in (_page_ads_now or []):
+                                _k = _raw.get("_key", "")
+                                if not _k or _k in self._seen_keys:
+                                    continue
+                                if _is_blocked(_raw):
+                                    self._seen_keys.add(_k)
+                                    continue
+                                self._seen_keys.add(_k)
+                                _ad = _to_standard_ad(_raw, "hot_check")
+                                self._page_ads[_hot_pid].append(_ad)
+                            self._visited_page_ids.add(_hot_pid)
+                        except Exception as _hce:
+                            logger.debug(f"  Hot-check failed for {_hot_pid}: {_hce}")
+                        _hot_checked += 1
+
                 if depth < self.max_keyword_depth and new_ads:
                     expanded = False
                     if self.use_ai and all_bodies_for_ai:
@@ -1070,6 +1109,27 @@ class FBAdsScraper:
                         self._page_keywords.get(page_id, set())
                     ),
                 )
+                # ── New signals attached after construction ──────────────────────────
+                # Saturation: max pages seen per keyword that matched this page
+                matched_kws = self._page_keywords.get(page_id, set())
+                w.saturation_count = max(
+                    (self._keyword_page_density.get(kw, 0) for kw in matched_kws),
+                    default=0,
+                )
+                # Page age: days since the oldest known ad (proxy for how new the page is)
+                if start_dates:
+                    try:
+                        earliest_dt = datetime.strptime(start_dates[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                        w.page_age_days = (datetime.now(timezone.utc) - earliest_dt).days
+                    except (ValueError, TypeError):
+                        w.page_age_days = None
+                else:
+                    w.page_age_days = None
+                # Freshness: what fraction of total ad versions are within the lookback window
+                recent_versions = sum(a.get("_ad_versions", 1) for a in recent)
+                total_versions_all = sum(a.get("_ad_versions", 1) for a in ads)
+                w.recent_ad_count = recent_versions
+                w.freshness_rate = round(recent_versions / total_versions_all, 4) if total_versions_all > 0 else 0.0
                 winners.append(w)
 
         # Score everything, attach score, sort by score descending
