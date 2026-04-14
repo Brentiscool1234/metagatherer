@@ -5,3 +5,4 @@ python-dotenv>=1.0.0
 click>=8.1.7
 rich>=13.7.0
 pandas>=2.2.0
+apify-client>=1.7.0
