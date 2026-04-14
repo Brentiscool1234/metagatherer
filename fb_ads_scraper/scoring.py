@@ -57,13 +57,21 @@ def score_product(w) -> tuple[float, dict]:
     b = {}
 
     # ── 1. Ad versions / creatives (3.0 pts) ─────────────────────────────────
-    # Active ad count — the single strongest dropshipping signal.
-    # Based on industry practice: nobody spends on 20+ ads unless profitable.
-    # <7    = just testing — very risky, skip
-    # 7–13  = early stage, still testing
-    # 14–19 = minimum viable — advertiser kept spending past break-even
-    # 20–29 = actively scaling with real budget
-    # 30+   = proven winner being aggressively scaled, copy immediately
+    # For Apify data: ad_count = sum of collation_count across the page's ads.
+    # collation_count = "N adsets use this creative" in the Ads Library UI.
+    #
+    # Modern Meta broad/ASC/DCT targeting: advertisers run 1–5 creatives each
+    # duplicated across many adsets (high collation_count) rather than launching
+    # dozens of distinct ads.  A single creative with collation_count=14 is
+    # identical in signal strength to 14 separate ads in the old model.
+    #
+    # Thresholds:
+    # <4    = just testing — very risky, skip
+    # 4–6   = early test (few adsets, low spend commitment)
+    # 7–13  = showing promise — advertiser kept budget alive
+    # 14–19 = minimum viable — proven past break-even
+    # 20–29 = actively scaling
+    # 30+   = aggressive scale — copy immediately
     c = w.ad_count
     if c >= 30:
         b["ad_versions"] = 3.0
@@ -109,28 +117,46 @@ def score_product(w) -> tuple[float, dict]:
     b["ad_age"] = ad_age_score
 
     # ── 3b. Ad expansion / momentum (1.0 pt) ─────────────────────────────────
-    # If the advertiser started with a few ads and kept adding more, that means
-    # they're seeing returns and scaling.  Measured by the spread between the
-    # oldest and newest start date, plus how recently the last ad was added.
+    # Measures whether the advertiser is actively scaling vs just launched.
     #
-    # spread >= 14 days AND newest <= 3 days ago  →  actively scaling  (1.0)
-    # spread >= 7  days AND newest <= 7 days ago  →  growing           (0.6)
-    # spread >= 3  days AND newest <= 14 days ago →  some expansion    (0.3)
-    # single batch launch or all same date        →  no expansion      (0.0)
+    # Modern broad/ASC/DCT note: advertisers often launch ALL creatives on the
+    # same day (single batch), then scale via budget bumps — NOT by adding new
+    # creatives.  So a single-launch-date scenario with high collation_count is
+    # normal and should NOT be penalised.
+    #
+    # Two scoring paths:
+    #   Multi-date spread (advertiser adding new creatives over time):
+    #     spread >= 14d AND newest <= 3d ago   → actively expanding  (1.0)
+    #     spread >= 7d  AND newest <= 7d ago   → growing             (0.6)
+    #     spread >= 3d  AND newest <= 14d ago  → some expansion      (0.3)
+    #   Single-date batch launch (broad/ASC/DCT pattern):
+    #     all same launch date AND launched <= 7d ago → fresh test    (0.3)
+    #     all same launch date AND launched 7–30d ago → stable run   (0.5)
+    #     (the ad_age criterion already rewards long-running campaigns)
     ad_expansion_score = 0.0
-    if len(w.ad_start_dates) >= 2:
+    if w.ad_start_dates:
         try:
-            dates = sorted(w.ad_start_dates)
-            oldest_dt = datetime.strptime(dates[0],  "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            dates = sorted(set(w.ad_start_dates))
             newest_dt = datetime.strptime(dates[-1], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-            spread_days      = (newest_dt - oldest_dt).days
             days_since_newest = (datetime.now(timezone.utc) - newest_dt).days
-            if spread_days >= 14 and days_since_newest <= 3:
-                ad_expansion_score = 1.0
-            elif spread_days >= 7 and days_since_newest <= 7:
-                ad_expansion_score = 0.6
-            elif spread_days >= 3 and days_since_newest <= 14:
-                ad_expansion_score = 0.3
+
+            if len(dates) >= 2:
+                oldest_dt    = datetime.strptime(dates[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                spread_days  = (newest_dt - oldest_dt).days
+                if spread_days >= 14 and days_since_newest <= 3:
+                    ad_expansion_score = 1.0
+                elif spread_days >= 7 and days_since_newest <= 7:
+                    ad_expansion_score = 0.6
+                elif spread_days >= 3 and days_since_newest <= 14:
+                    ad_expansion_score = 0.3
+            else:
+                # Single batch launch — broad/ASC/DCT pattern
+                # Score by how recently the campaign is still running
+                if days_since_newest <= 7:
+                    ad_expansion_score = 0.3   # fresh test, too early to confirm
+                elif days_since_newest <= 30:
+                    ad_expansion_score = 0.5   # campaign survived past testing window
+                # >30 days since last (only) launch date → ad_age criterion handles it
         except (ValueError, TypeError):
             ad_expansion_score = 0.0
     b["ad_expansion"] = ad_expansion_score
