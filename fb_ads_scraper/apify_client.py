@@ -77,7 +77,10 @@ class ApifyAdsClient:
             items = list(
                 self._client.dataset(run["defaultDatasetId"]).iterate_items()
             )
-            logger.debug(f"  Apify: {len(items)} results for '{keyword}'")
+            logger.info(f"  Apify: {len(items)} raw items for '{keyword}'")
+            # Log the keys of the first item so we can verify field mapping
+            if items:
+                logger.info(f"  Apify sample fields: {list(items[0].keys())[:20]}")
             return items
         except Exception as e:
             logger.warning(f"Apify error for '{keyword}': {e}")

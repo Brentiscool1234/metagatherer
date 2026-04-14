@@ -726,20 +726,26 @@ class FBAdsScraper:
                 _pages_this_keyword: set[str] = set()
 
                 for raw in raw_ads:
-                    key = raw.get("_key", "") or raw.get("id", "")
+                    # For Apify: convert first so _key is built from actor-specific fields,
+                    # then use the converted ad's key. For other sources check raw directly.
+                    if _apify_client:
+                        ad = _apify_to_std(raw, keyword)
+                        key = ad.get("_key", "")
+                    else:
+                        key = raw.get("_key", "") or raw.get("id", "")
+
                     if not key or key in self._seen_keys:
                         continue
                     if _is_blocked(raw):
                         self._seen_keys.add(key)
                         continue
                     self._seen_keys.add(key)
-                    # Convert raw ad to standard format depending on source
-                    if _apify_client:
-                        ad = _apify_to_std(raw, keyword)
-                    elif _api_client:
-                        ad = _api_ad_to_standard(raw, keyword)
-                    else:
-                        ad = _to_standard_ad(raw, keyword)
+                    # For non-Apify sources, convert now
+                    if not _apify_client:
+                        if _api_client:
+                            ad = _api_ad_to_standard(raw, keyword)
+                        else:
+                            ad = _to_standard_ad(raw, keyword)
                     page_id = ad.get("page_id", "")
                     if page_id and page_id != "unknown":
                         self._page_ads[page_id].append(ad)
