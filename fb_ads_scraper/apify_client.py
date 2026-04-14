@@ -61,7 +61,7 @@ class ApifyAdsClient:
 
         run_input = {
             "urls": [{"url": search_url}],
-            "scrapeAdDetails": None,
+            "scrapeAdDetails": True,
             "limitPerSource": None,
             "count": limit,
             "scrapePageAds.period": "",
