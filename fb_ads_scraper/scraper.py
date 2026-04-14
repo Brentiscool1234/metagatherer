@@ -497,6 +497,7 @@ class WinningProduct:
             "page_age_days": getattr(self, "page_age_days", ""),
             "recent_ad_count": getattr(self, "recent_ad_count", 0),
             "freshness_rate": getattr(self, "freshness_rate", ""),
+            "market_stage": getattr(self, "market_stage", ""),
         }
 
 
@@ -1130,6 +1131,25 @@ class FBAdsScraper:
                 total_versions_all = sum(a.get("_ad_versions", 1) for a in ads)
                 w.recent_ad_count = recent_versions
                 w.freshness_rate = round(recent_versions / total_versions_all, 4) if total_versions_all > 0 else 0.0
+
+                # Market stage: classify by age + saturation
+                # too_early  < 3 days   — not enough data to validate
+                # emerging   3–13 days  — active and growing (sweet spot)
+                # stable     14–44 days — proven ROI, still worth entering
+                # mature     45+ days   — established; check competition carefully
+                _age = getattr(w, "page_age_days", None)
+                _sat = getattr(w, "saturation_count", 0)
+                if _age is None:
+                    w.market_stage = "unknown"
+                elif _age < 3:
+                    w.market_stage = "too_early"
+                elif _age < 14:
+                    w.market_stage = "emerging"
+                elif _age < 45 or _sat <= 10:
+                    w.market_stage = "stable"
+                else:
+                    w.market_stage = "mature"
+
                 winners.append(w)
 
         # Score everything, attach score, sort by score descending

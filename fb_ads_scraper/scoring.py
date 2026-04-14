@@ -5,30 +5,31 @@ Criteria and max points:
   ad_versions    3.0  — active ad count = real testing budget (14+ min, 20+ good, 30+ great)
   shopify        2.5  — Shopify = dropshipping infra confirmed
   ad_age         1.5  — running 14+ days = proven ROI, not just testing
+  ad_expansion   1.0  — still launching new creatives = momentum / active scaling
   video_ads      1.0  — video converts better; serious advertisers use video
   followers      1.0  — sweet spot 50–500: early-stage brand scaling fast
   cross_platform 0.5  — running on Instagram too = larger budget / reach
   shop_now_cta   0.5  — direct purchase CTA present
                ───
-  max total     10.0  (hard-capped)
+  base max      10.0  (hard-capped after bonuses/penalties)
 
-Bonuses / penalties applied after the base score (can shift score, cap still 10.0):
+Bonuses / penalties applied after the base score:
   page_age      +0.5  very new page (< 30 days) / +0.25 relatively new (< 90 days)
   freshness     +0.5  most ads fresh (> 70%) / +0.25 mostly fresh (> 40%)
-  saturation    -1.5  keyword very saturated (> 20 pages) / -0.75 moderately (> 10)
+  competition   +0.25 moderate competitors (3–10) = proof of demand
+               -0.75  saturated (> 10 pages)
+               -1.5   very saturated (> 20 pages)
 
 Score ≥ 6  → winner
 Score 4–5.9 → near-miss (show but flag)
 Score < 4  → excluded
 
-Design principle: ad_versions is the strongest signal. Industry consensus:
-  - <7 ads  = just testing, very risky to copy
-  - 14+ ads = minimum viable (advertiser has kept spending → profitable)
-  - 20+ ads = actively scaling, strong signal
-  - 30+ ads = proven winner being aggressively scaled, copy immediately
-
-Combined with Shopify + 14+ days running = almost certainly a scaling
-dropshipping product worth investigating.
+Validation factors (from spec):
+  1. Active ad count   — 0–5 weak, 6–13 moderate, 14+ strong
+  2. Run duration      — <3 days too early, 7+ good, 14+ very good, 30+ mature/stable
+  3. Expansion signal  — new ads added after launch = advertiser scaling = strongest momentum sign
+  4. Follower count    — supporting signal only; 10+ positive, 100+ credible
+  5. Competition count — 3–10 = proof of demand; >20 = saturation risk
 """
 
 from datetime import datetime, timezone
@@ -40,6 +41,7 @@ CRITERIA = {
     "ad_versions":   ("Ad Creatives",   3.0),
     "shopify":       ("Shopify",        2.5),
     "ad_age":        ("Ad Age",         1.5),
+    "ad_expansion":  ("Expansion",      1.0),
     "video_ads":     ("Video",          1.0),
     "followers":     ("Followers",      1.0),
     "cross_platform":("Cross-Platform", 0.5),
@@ -106,6 +108,33 @@ def score_product(w) -> tuple[float, dict]:
             ad_age_score = 0.5   # date parse failed — neutral
     b["ad_age"] = ad_age_score
 
+    # ── 3b. Ad expansion / momentum (1.0 pt) ─────────────────────────────────
+    # If the advertiser started with a few ads and kept adding more, that means
+    # they're seeing returns and scaling.  Measured by the spread between the
+    # oldest and newest start date, plus how recently the last ad was added.
+    #
+    # spread >= 14 days AND newest <= 3 days ago  →  actively scaling  (1.0)
+    # spread >= 7  days AND newest <= 7 days ago  →  growing           (0.6)
+    # spread >= 3  days AND newest <= 14 days ago →  some expansion    (0.3)
+    # single batch launch or all same date        →  no expansion      (0.0)
+    ad_expansion_score = 0.0
+    if len(w.ad_start_dates) >= 2:
+        try:
+            dates = sorted(w.ad_start_dates)
+            oldest_dt = datetime.strptime(dates[0],  "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            newest_dt = datetime.strptime(dates[-1], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            spread_days      = (newest_dt - oldest_dt).days
+            days_since_newest = (datetime.now(timezone.utc) - newest_dt).days
+            if spread_days >= 14 and days_since_newest <= 3:
+                ad_expansion_score = 1.0
+            elif spread_days >= 7 and days_since_newest <= 7:
+                ad_expansion_score = 0.6
+            elif spread_days >= 3 and days_since_newest <= 14:
+                ad_expansion_score = 0.3
+        except (ValueError, TypeError):
+            ad_expansion_score = 0.0
+    b["ad_expansion"] = ad_expansion_score
+
     # ── 4. Video ads (1.0 pt) ────────────────────────────────────────────────
     b["video_ads"] = 1.0 if w.is_video else 0.0
 
@@ -154,13 +183,21 @@ def score_product(w) -> tuple[float, dict]:
             b["freshness_bonus"] = 0.0
         total += b["freshness_bonus"]
 
-    # ── 10. Saturation penalty ────────────────────────────────────────────────
+    # ── 10. Competition signal (saturation penalty / demand proof) ────────────
+    # Some competition = demand is proven (people ARE buying this product).
+    # Too much competition = market may be saturated and hard to enter.
+    # 0–2 competitors   → neutral (0.0)  — unproven niche
+    # 3–10 competitors  → +0.25          — proof of demand without oversaturation
+    # 11–20 competitors → -0.75          — moderately saturated
+    # 20+ competitors   → -1.5           — very saturated
     saturation = getattr(w, "saturation_count", None)
     if saturation is not None:
         if saturation > 20:
             b["saturation_penalty"] = -1.5
         elif saturation > 10:
             b["saturation_penalty"] = -0.75
+        elif saturation >= 3:
+            b["saturation_penalty"] = 0.25   # moderate competition = demand proof
         else:
             b["saturation_penalty"] = 0.0
         total += b["saturation_penalty"]

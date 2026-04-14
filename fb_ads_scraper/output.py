@@ -126,6 +126,7 @@ def _render_table(products: list[WinningProduct], show_rank: bool):
         table.add_column("#", style="dim", width=3, justify="right")
     table.add_column("Page / Store", style="bold", min_width=18)
     table.add_column("Score", min_width=26)
+    table.add_column("Stage", width=6)
     table.add_column("Ads", justify="center", width=5)
     table.add_column("Followers", justify="right", width=11)
     table.add_column("Vid", justify="center", width=4)
@@ -162,7 +163,7 @@ def _render_table(products: list[WinningProduct], show_rank: bool):
 
         page_display = f"[link={w.page_url}]{w.page_name}[/link]" if w.page_url else w.page_name
 
-        row = [page_display, bar, ad_str, fol_str,
+        row = [page_display, bar, _stage_short(w), ad_str, fol_str,
                _bool_icon(w.is_video),
                shopify_icon, store, lib_link]
         if show_rank:
@@ -170,6 +171,25 @@ def _render_table(products: list[WinningProduct], show_rank: bool):
         table.add_row(*row)
 
     console.print(table)
+
+
+_STAGE_DISPLAY = {
+    "too_early": ("[yellow]⏳ Too early[/yellow]",    "EARLY"),
+    "emerging":  ("[bright_green]🚀 Emerging[/bright_green]",  "EMERG"),
+    "stable":    ("[cyan]✓  Stable[/cyan]",            "STABLE"),
+    "mature":    ("[blue]⚠  Mature[/blue]",            "MATUR"),
+    "unknown":   ("[dim]?  Unknown[/dim]",              "?    "),
+}
+
+
+def _stage_str(w: WinningProduct) -> str:
+    stage = getattr(w, "market_stage", "unknown") or "unknown"
+    return _STAGE_DISPLAY.get(stage, ("[dim]?[/dim]", "?"))[0]
+
+
+def _stage_short(w: WinningProduct) -> str:
+    stage = getattr(w, "market_stage", "unknown") or "unknown"
+    return _STAGE_DISPLAY.get(stage, ("?", "?    "))[1]
 
 
 def _print_detail_card(w: WinningProduct, rank: int):
@@ -235,6 +255,7 @@ def _print_detail_card(w: WinningProduct, rank: int):
         (f"[bold]Ad snap ↗:[/bold] [cyan][link={snapshot}]{snapshot[:80]}[/link][/cyan]"
          if snapshot else ""),
         f"[bold]Ads:[/bold]       {w.ad_count} active  (total on page: {w.total_page_ads})",
+        f"[bold]Stage:[/bold]     {_stage_str(w)}",
         f"[bold]Shopify:[/bold]   {shopify_str}",
         sourcing_line,
         f"[bold]Platforms:[/bold] {', '.join(w.publisher_platforms) or '—'}",
