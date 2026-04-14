@@ -492,6 +492,11 @@ class WinningProduct:
             "gross_profit_usd": sourcing.get("gross_profit", ""),
             "break_even_roas": sourcing.get("break_even_roas", ""),
             "margin_viable": sourcing.get("margin_viable", ""),
+            # ── New signals ──────────────────────────────────────────────────
+            "saturation_count": getattr(self, "saturation_count", 0),
+            "page_age_days": getattr(self, "page_age_days", ""),
+            "recent_ad_count": getattr(self, "recent_ad_count", 0),
+            "freshness_rate": getattr(self, "freshness_rate", ""),
         }
 
 
@@ -536,6 +541,8 @@ class FBAdsScraper:
         self._searched_keywords: set[str] = set()
         self._seen_winner_ids: set[str] = set()
         self._visited_page_ids: set[str] = set()   # pages already Phase-2-crawled
+        # Saturation tracking: keyword → number of distinct pages seen for that keyword
+        self._keyword_page_density: dict[str, int] = {}
 
         # Load previous run's state unless reset was requested
         self._resume_queue: list[tuple[str, int]] = []
@@ -564,9 +571,10 @@ class FBAdsScraper:
             "seen_keys": self._seen_keys,
             "seen_winner_ids": self._seen_winner_ids,
             "visited_page_ids": self._visited_page_ids,
+            "keyword_page_density": self._keyword_page_density,
         }
 
-    def run(self, extra_keywords: list[str] = None) -> list[WinningProduct]:
+    def run(self, extra_keywords: list[str] = None, discord_webhook: str = "") -> list[WinningProduct]:
         # Generic seeds that reliably return results from FB Ads Library.
         # Always included as a safety net so Phase 1 collects something even
         # if niche-specific terms return 0 ads.
@@ -689,6 +697,8 @@ class FBAdsScraper:
                     raw_ads = browser.search_keyword(keyword, max_ads=self.max_ads_per_keyword)
 
                 new_ads = []
+                # Track distinct pages seen for this keyword (saturation)
+                _pages_this_keyword: set[str] = set()
 
                 for raw in raw_ads:
                     key = raw.get("_key", "") or raw.get("id", "")
@@ -707,6 +717,7 @@ class FBAdsScraper:
                     if page_id and page_id != "unknown":
                         self._page_ads[page_id].append(ad)
                         self._page_keywords[page_id].add(keyword)
+                        _pages_this_keyword.add(page_id)
                         new_ads.append(ad)
                         bodies = ad.get("ad_creative_bodies") or []
                         body = bodies[0] if bodies else ""
@@ -715,6 +726,9 @@ class FBAdsScraper:
                         pname = ad.get("page_name", "")
                         if pname:
                             all_page_names_for_ai.append(pname)
+
+                # Update saturation density for this keyword
+                self._keyword_page_density[keyword] = len(_pages_this_keyword)
 
                 if depth < self.max_keyword_depth and new_ads:
                     expanded = False

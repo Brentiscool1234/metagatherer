@@ -10,7 +10,12 @@ Criteria and max points:
   cross_platform 0.5  — running on Instagram too = larger budget / reach
   shop_now_cta   0.5  — direct purchase CTA present
                ───
-  max total     10.0
+  max total     10.0  (hard-capped)
+
+Bonuses / penalties applied after the base score (can shift score, cap still 10.0):
+  page_age      +0.5  very new page (< 30 days) / +0.25 relatively new (< 90 days)
+  freshness     +0.5  most ads fresh (> 70%) / +0.25 mostly fresh (> 40%)
+  saturation    -1.5  keyword very saturated (> 20 pages) / -0.75 moderately (> 10)
 
 Score ≥ 6  → winner
 Score 4–5.9 → near-miss (show but flag)
@@ -125,5 +130,40 @@ def score_product(w) -> tuple[float, dict]:
     # ── 7. Shop Now CTA (0.5 pt) ─────────────────────────────────────────────
     b["shop_now_cta"] = 0.5 if w.has_shop_now else 0.0
 
-    total = round(min(sum(b.values()), 10.0), 2)
+    total = sum(b.values())
+
+    # ── 8. Page age bonus (using page_age_days from oldest known ad) ──────────
+    page_age_days = getattr(w, "page_age_days", None)
+    if page_age_days is not None:
+        if page_age_days < 30:
+            b["page_age_bonus"] = 0.5   # very new — rare find
+        elif page_age_days < 90:
+            b["page_age_bonus"] = 0.25  # relatively new
+        else:
+            b["page_age_bonus"] = 0.0   # established — neutral
+        total += b["page_age_bonus"]
+
+    # ── 9. Ad freshness rate bonus ─────────────────────────────────────────────
+    freshness = getattr(w, "freshness_rate", None)
+    if freshness is not None:
+        if freshness > 0.7:
+            b["freshness_bonus"] = 0.5
+        elif freshness > 0.4:
+            b["freshness_bonus"] = 0.25
+        else:
+            b["freshness_bonus"] = 0.0
+        total += b["freshness_bonus"]
+
+    # ── 10. Saturation penalty ────────────────────────────────────────────────
+    saturation = getattr(w, "saturation_count", None)
+    if saturation is not None:
+        if saturation > 20:
+            b["saturation_penalty"] = -1.5
+        elif saturation > 10:
+            b["saturation_penalty"] = -0.75
+        else:
+            b["saturation_penalty"] = 0.0
+        total += b["saturation_penalty"]
+
+    total = round(min(max(total, 0.0), 10.0), 2)
     return total, b
