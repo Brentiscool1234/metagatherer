@@ -509,6 +509,7 @@ class FBAdsScraper:
         min_ads: int = 5,
         min_followers: int = 10,
         max_followers: int = 2000,
+        max_total_ads: int = 0,
         prefer_video: bool = True,
         require_shop_now: bool = False,
         max_keyword_depth: int = 3,
@@ -525,6 +526,7 @@ class FBAdsScraper:
         self.min_ads = min_ads
         self.min_followers = min_followers
         self.max_followers = max_followers
+        self.max_total_ads = max_total_ads  # 0 = no cap
         self.prefer_video = prefer_video
         self.require_shop_now = require_shop_now
         self.max_keyword_depth = max_keyword_depth
@@ -1011,6 +1013,20 @@ class FBAdsScraper:
             if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
                 logger.debug(f"  SKIP {page_id}: {fan_count} followers outside range")
                 stats["follower_range"] += 1; continue
+
+            # Upper ad count cap — pages with too many total active ads are
+            # large commercial brands or media buyers, not dropshipping stores.
+            # (Validated workflow uses 250; we default to 0 = disabled so existing
+            # users aren't affected unless they set --max-total-ads explicitly.)
+            if self.max_total_ads > 0:
+                page_total_versions = sum(a.get("_ad_versions", 1) for a in ads)
+                if page_total_versions > self.max_total_ads:
+                    logger.debug(
+                        f"  SKIP {page_id}: {page_total_versions} total ad versions "
+                        f"> max {self.max_total_ads} (likely large brand)"
+                    )
+                    stats["too_many_ads"] = stats.get("too_many_ads", 0) + 1
+                    continue
 
             recent = [a for a in ads if _within_days(a, self.days)]
             if not recent:

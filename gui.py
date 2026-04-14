@@ -143,12 +143,13 @@ class App(tk.Tk):
         self.v_keywords = self._row_entry(left, "Extra keywords", "comma-separated")
 
         self._section(left, "Filters")
-        self.v_country  = self._row_entry(left, "Country",       "US", width=6)
-        self.v_days     = self._row_spin(left,  "Ad lookback",   1, 90,  7)
-        self.v_min_ads  = self._row_spin(left,  "Min ads",       1, 100, 5)
-        self.v_max_kw   = self._row_spin(left,  "Max keywords",  5, 200, 30)
-        self.v_min_fol  = self._row_spin(left,  "Min followers", 0, 9999, 10)
-        self.v_max_fol  = self._row_spin(left,  "Max followers", 100, 500000, 2000)
+        self.v_country     = self._row_entry(left, "Country",       "US", width=6)
+        self.v_days        = self._row_spin(left,  "Ad lookback",   1, 90,  7)
+        self.v_min_ads     = self._row_spin(left,  "Min ads",       1, 100, 5)
+        self.v_max_kw      = self._row_spin(left,  "Max keywords",  5, 200, 30)
+        self.v_min_fol     = self._row_spin(left,  "Min followers", 0, 9999, 10)
+        self.v_max_fol     = self._row_spin(left,  "Max followers", 100, 500000, 2000)
+        self.v_max_tot_ads = self._row_spin(left,  "Max total ads", 0, 5000, 0)
 
         self._section(left, "Options")
         self.v_headless     = tk.BooleanVar(value=False)
@@ -643,8 +644,9 @@ class App(tk.Tk):
             "--days",          str(self.v_days.get()),
             "--min-ads",       str(self.v_min_ads.get()),
             "--max-keywords",  str(self.v_max_kw.get()),
-            "--min-followers", str(self.v_min_fol.get()),
-            "--max-followers", str(self.v_max_fol.get()),
+            "--min-followers",  str(self.v_min_fol.get()),
+            "--max-followers",  str(self.v_max_fol.get()),
+            "--max-total-ads",  str(self.v_max_tot_ads.get()),
         ]
         if self.v_headless.get():     cmd.append("--headless")
         if self.v_reset.get():        cmd.append("--reset")
