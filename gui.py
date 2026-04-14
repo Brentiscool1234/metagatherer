@@ -100,10 +100,32 @@ class App(tk.Tk):
         body = tk.Frame(self, bg=BG)
         body.pack(fill="both", expand=True, padx=14, pady=10)
 
-        left  = tk.Frame(body, bg=BG, width=290)
+        # ── Scrollable left panel (so Controls never get pushed off-screen) ─────
+        left_outer = tk.Frame(body, bg=BG, width=290)
+        left_outer.pack(side="left", fill="y", padx=(0, 10))
+        left_outer.pack_propagate(False)
+
+        _lcanvas = tk.Canvas(left_outer, bg=BG, highlightthickness=0, width=274)
+        _lscroll = ttk.Scrollbar(left_outer, orient="vertical", command=_lcanvas.yview)
+        _lcanvas.configure(yscrollcommand=_lscroll.set)
+        _lscroll.pack(side="right", fill="y")
+        _lcanvas.pack(side="left", fill="both", expand=True)
+
+        left = tk.Frame(_lcanvas, bg=BG)
+        _lcw  = _lcanvas.create_window((0, 0), window=left, anchor="nw")
+
+        def _on_left_resize(e):
+            _lcanvas.configure(scrollregion=_lcanvas.bbox("all"))
+            _lcanvas.itemconfig(_lcw, width=_lcanvas.winfo_width())
+        left.bind("<Configure>", _on_left_resize)
+        _lcanvas.bind("<Configure>", lambda e: _lcanvas.itemconfig(_lcw, width=e.width))
+
+        def _on_scroll(e):
+            _lcanvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+        _lcanvas.bind("<MouseWheel>", _on_scroll)
+        left.bind("<MouseWheel>", _on_scroll)
+
         right = tk.Frame(body, bg=BG)
-        left.pack(side="left", fill="y", padx=(0, 10))
-        left.pack_propagate(False)
         right.pack(side="left", fill="both", expand=True)
 
         # ── Settings ─────────────────────────────────────────────────────────
@@ -225,10 +247,25 @@ class App(tk.Tk):
         tk.Label(left, textvariable=self.status_var, font=FONT,
                  bg=BG, fg=FG_DIM).pack()
 
-        # ── Right panel: Log + AI Expert (paned) ──────────────────────────────
-        pane = tk.PanedWindow(right, orient="vertical", bg=BG,
-                              sashwidth=6, sashrelief="flat",
-                              sashpad=2)
+        # ── Right panel: Notebook tabs ─────────────────────────────────────────
+        style = ttk.Style(self)
+        style.theme_use("default")
+        style.configure("Dark.TNotebook", background=BG, borderwidth=0)
+        style.configure("Dark.TNotebook.Tab", background=BG3, foreground=FG,
+                        padding=[10, 4], font=FONT)
+        style.map("Dark.TNotebook.Tab",
+                  background=[("selected", ACCENT2)],
+                  foreground=[("selected", "white")])
+
+        self._notebook = ttk.Notebook(right, style="Dark.TNotebook")
+        self._notebook.pack(fill="both", expand=True)
+
+        # ── Tab 1: Scan (log + AI Expert) ─────────────────────────────────────
+        scan_tab = tk.Frame(self._notebook, bg=BG)
+        self._notebook.add(scan_tab, text="  Scan  ")
+
+        pane = tk.PanedWindow(scan_tab, orient="vertical", bg=BG,
+                              sashwidth=6, sashrelief="flat", sashpad=2)
         pane.pack(fill="both", expand=True)
 
         # Log panel (top)
@@ -287,8 +324,77 @@ class App(tk.Tk):
         pane.add(log_frame, stretch="always")
         pane.add(ai_frame,  stretch="always")
         pane.paneconfig(ai_frame, minsize=160)
-        # Give the log ~60% of the height
         self.after(100, lambda: pane.sash_place(0, 0, int(self.winfo_height() * 0.62)))
+
+        # ── Tab 2: Results ────────────────────────────────────────────────────
+        results_tab = tk.Frame(self._notebook, bg=BG)
+        self._notebook.add(results_tab, text="  Results  ")
+
+        res_header = tk.Frame(results_tab, bg=BG)
+        res_header.pack(fill="x", pady=(6, 4), padx=6)
+        tk.Label(res_header, text="Current scan winners & near-misses",
+                 font=FONT_BOLD, bg=BG, fg=FG).pack(side="left")
+        tk.Button(res_header, text="Refresh", font=FONT, bg=BG3, fg=FG,
+                  activebackground=ACCENT2, bd=0, padx=8,
+                  command=self._refresh_results).pack(side="right")
+
+        res_cols = ("score", "page_name", "ad_count", "followers",
+                    "shopify", "freshness", "saturation", "store_url")
+        self._res_tree = ttk.Treeview(results_tab, columns=res_cols,
+                                       show="headings", selectmode="browse")
+        _res_headers = {
+            "score": ("Score", 60), "page_name": ("Page", 160),
+            "ad_count": ("Ads", 50), "followers": ("Followers", 80),
+            "shopify": ("Shopify", 60), "freshness": ("Fresh%", 65),
+            "saturation": ("Sat.", 50), "store_url": ("Store URL", 220),
+        }
+        for col, (hdr, w) in _res_headers.items():
+            self._res_tree.heading(col, text=hdr)
+            self._res_tree.column(col, width=w, minwidth=40)
+
+        res_scroll = ttk.Scrollbar(results_tab, orient="vertical",
+                                    command=self._res_tree.yview)
+        self._res_tree.configure(yscrollcommand=res_scroll.set)
+        self._res_tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=(0, 6))
+        res_scroll.pack(side="right", fill="y", pady=(0, 6))
+
+        # ── Tab 3: History ────────────────────────────────────────────────────
+        history_tab = tk.Frame(self._notebook, bg=BG)
+        self._notebook.add(history_tab, text="  History  ")
+
+        hist_header = tk.Frame(history_tab, bg=BG)
+        hist_header.pack(fill="x", pady=(6, 4), padx=6)
+        tk.Label(hist_header, text="Past scan history (from local DB)",
+                 font=FONT_BOLD, bg=BG, fg=FG).pack(side="left")
+        tk.Button(hist_header, text="Refresh", font=FONT, bg=BG3, fg=FG,
+                  activebackground=ACCENT2, bd=0, padx=8,
+                  command=self._refresh_history).pack(side="right")
+
+        hist_cols = ("timestamp", "niche", "keywords", "ads", "pages",
+                     "winners", "near_misses")
+        self._hist_tree = ttk.Treeview(history_tab, columns=hist_cols,
+                                        show="headings", selectmode="browse")
+        _hist_headers = {
+            "timestamp": ("Time", 140), "niche": ("Niche", 100),
+            "keywords": ("Keywords", 70), "ads": ("Ads", 60),
+            "pages": ("Pages", 60), "winners": ("Winners", 60),
+            "near_misses": ("Near-Miss", 70),
+        }
+        for col, (hdr, w) in _hist_headers.items():
+            self._hist_tree.heading(col, text=hdr)
+            self._hist_tree.column(col, width=w, minwidth=40)
+
+        hist_scroll = ttk.Scrollbar(history_tab, orient="vertical",
+                                     command=self._hist_tree.yview)
+        self._hist_tree.configure(yscrollcommand=hist_scroll.set)
+        self._hist_tree.pack(side="left", fill="both", expand=True, padx=(6, 0), pady=(0, 6))
+        hist_scroll.pack(side="right", fill="y", pady=(0, 6))
+
+        # Bind tab selection to refresh history when History tab is shown
+        self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_change)
+
+        # Load history on start
+        self.after(500, self._refresh_history)
 
     # ── Widget helpers ───────────────────────────────────────────────────────
 
@@ -594,6 +700,56 @@ class App(tk.Tk):
         self._paused  = False
         self._set_buttons("idle")
         self.status_var.set("Done")
+        self.after(1000, self._refresh_results)   # give DB a moment to be written
+
+    def _on_tab_change(self, event):
+        tab = self._notebook.tab(self._notebook.select(), "text").strip()
+        if tab == "History":
+            self._refresh_history()
+
+    def _refresh_results(self):
+        """Populate Results tab from the most recent scan's winners in the DB."""
+        try:
+            from fb_ads_scraper.db import load_recent_scans, load_winners_for_scan
+            scans = load_recent_scans(limit=1)
+            if not scans:
+                return
+            scan_id = scans[0]["id"]
+            rows = load_winners_for_scan(scan_id)
+            self._res_tree.delete(*self._res_tree.get_children())
+            for r in rows:
+                fresh_pct = f"{r['freshness_rate']*100:.0f}%" if r.get('freshness_rate') else ""
+                self._res_tree.insert("", "end", values=(
+                    r.get("score", ""),
+                    r.get("page_name", ""),
+                    r.get("ad_count", ""),
+                    r.get("page_followers", ""),
+                    "✓" if r.get("is_shopify") else "",
+                    fresh_pct,
+                    r.get("saturation_count", ""),
+                    r.get("store_url", ""),
+                ))
+        except Exception:
+            pass
+
+    def _refresh_history(self):
+        """Populate History tab from DB."""
+        try:
+            from fb_ads_scraper.db import load_recent_scans
+            scans = load_recent_scans(limit=50)
+            self._hist_tree.delete(*self._hist_tree.get_children())
+            for s in scans:
+                self._hist_tree.insert("", "end", values=(
+                    s.get("timestamp", "")[:16],
+                    s.get("niche", "") or "—",
+                    s.get("keywords_count", ""),
+                    s.get("ads_count", ""),
+                    s.get("pages_count", ""),
+                    s.get("winner_count", ""),
+                    s.get("near_miss_count", ""),
+                ))
+        except Exception:
+            pass
 
     # ── Stats parsing (feeds AI expert) ─────────────────────────────────────
 
