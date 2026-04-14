@@ -159,24 +159,24 @@ class App(tk.Tk):
         self._check(left, "Headless (no visible browser)", self.v_headless)
         self._check(left, "Reset saved state",              self.v_reset)
 
-        # ── Fast Mode (FB Ads API token) ─────────────────────────────────────
-        self._section(left, "⚡ Fast Mode (FB API)")
-        fb_row = tk.Frame(left, bg=BG)
-        fb_row.pack(fill="x", pady=2)
-        tk.Label(fb_row, text="FB Token", font=FONT, bg=BG, fg=FG,
-                 width=8, anchor="w").pack(side="left")
-        self.v_fb_token = tk.StringVar(value=os.environ.get("FB_ACCESS_TOKEN", ""))
-        tk.Entry(fb_row, textvariable=self.v_fb_token, font=FONT,
+        # ── Fast Mode (Apify) ────────────────────────────────────────────────
+        self._section(left, "⚡ Fast Mode (Apify)")
+        ap_row = tk.Frame(left, bg=BG)
+        ap_row.pack(fill="x", pady=2)
+        tk.Label(ap_row, text="Apify Key", font=FONT, bg=BG, fg=FG,
+                 width=9, anchor="w").pack(side="left")
+        self.v_apify_key = tk.StringVar(value=os.environ.get("APIFY_API_KEY", ""))
+        tk.Entry(ap_row, textvariable=self.v_apify_key, font=FONT,
                  bg=BG2, fg=FG, insertbackground=FG, bd=0,
                  highlightbackground=BG3, highlightthickness=1,
                  show="*").pack(side="left", expand=True, fill="x")
-        tk.Button(fb_row, text="Save", font=FONT, bg=BG3, fg=FG,
+        tk.Button(ap_row, text="Save", font=FONT, bg=BG3, fg=FG,
                   activebackground=GREEN, bd=0, padx=6,
-                  command=self._save_fb_token).pack(side="left", padx=(4, 0))
-        self.fb_status = tk.Label(left, text="", font=("Segoe UI", 8),
-                                  bg=BG, fg=FG_DIM)
-        self.fb_status.pack(anchor="w")
-        self._refresh_fb_status()
+                  command=self._save_apify_key).pack(side="left", padx=(4, 0))
+        self.apify_status = tk.Label(left, text="", font=("Segoe UI", 8),
+                                     bg=BG, fg=FG_DIM)
+        self.apify_status.pack(anchor="w")
+        self._refresh_apify_status()
 
         # ── API key ───────────────────────────────────────────────────────────
         self._section(left, "AI Expert (Anthropic)")
@@ -516,35 +516,33 @@ class App(tk.Tk):
         else:
             self.api_status.config(text="No key — AI expert disabled", fg=FG_DIM)
 
-    def _save_fb_token(self):
-        token = self.v_fb_token.get().strip()
+    def _save_apify_key(self):
+        key = self.v_apify_key.get().strip()
         env_path = self._env_path()
         lines = []
         try:
             with open(env_path) as f:
                 lines = [l for l in f.readlines()
-                         if not l.startswith("FB_ACCESS_TOKEN=")]
+                         if not l.startswith("APIFY_API_KEY=")]
         except FileNotFoundError:
             pass
-        if token:
-            lines.append(f"FB_ACCESS_TOKEN={token}\n")
+        if key:
+            lines.append(f"APIFY_API_KEY={key}\n")
         with open(env_path, "w") as f:
             f.writelines(lines)
-        if token:
-            os.environ["FB_ACCESS_TOKEN"] = token
+        if key:
+            os.environ["APIFY_API_KEY"] = key
         else:
-            os.environ.pop("FB_ACCESS_TOKEN", None)
-        self._refresh_fb_status()
+            os.environ.pop("APIFY_API_KEY", None)
+        self._refresh_apify_status()
 
-    def _refresh_fb_status(self):
-        token = self.v_fb_token.get().strip()
-        if token:
-            self.fb_status.config(
-                text=f"⚡ Fast mode active — API key set ({token[:6]}…)",
-                fg=ACCENT2)
+    def _refresh_apify_status(self):
+        key = self.v_apify_key.get().strip()
+        if key:
+            self.apify_status.config(
+                text=f"⚡ Apify mode active ({key[:8]}…)", fg=ACCENT2)
         else:
-            self.fb_status.config(
-                text="Browser mode (no FB token set)", fg=FG_DIM)
+            self.apify_status.config(text="No key — Apify disabled", fg=FG_DIM)
 
     def _browse_output(self):
         path = filedialog.asksaveasfilename(

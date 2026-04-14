@@ -631,25 +631,39 @@ class FBAdsScraper:
         if extra_keywords:
             seeds = list(extra_keywords) + [s for s in seeds if s not in extra_keywords]
 
-        # ── API fast-path detection ───────────────────────────────────────────
-        # If FB_ACCESS_TOKEN is set, Phase 1 runs via the official API (no
-        # browser needed — 10-30× faster). Phase 2 still needs the browser for
-        # accurate active-ad counts. Get a token at:
-        # developers.facebook.com → My Apps → Tools → Graph API Explorer
-        _fb_token = os.getenv("FB_ACCESS_TOKEN", "").strip()
-        _api_client = None
-        if _fb_token:
+        # ── Fast-path detection (priority: Apify > FB API > browser) ────────────
+        # Apify: set APIFY_API_KEY (and optionally APIFY_ACTOR_ID) in .env
+        # FB API: set FB_ACCESS_TOKEN in .env
+        # Both skip the local browser for Phase 1; Phase 2 always uses browser.
+        _apify_client = None
+        _api_client   = None
+
+        _apify_key = os.getenv("APIFY_API_KEY", "").strip()
+        if _apify_key:
             try:
-                from .api import FBApiClient
-                _api_client = FBApiClient(_fb_token)
-                if _api_client.verify_token():
-                    logger.info("FB API token valid — Phase 1 will use API (fast mode)")
-                else:
-                    logger.warning("FB_ACCESS_TOKEN invalid — falling back to browser")
-                    _api_client = None
+                from .apify_client import ApifyAdsClient
+                _apify_client = ApifyAdsClient(_apify_key)
+                logger.info(
+                    f"Apify mode active — Phase 1 via actor '{_apify_client.actor_id}'"
+                )
             except Exception as e:
-                logger.warning(f"FB API init failed: {e} — falling back to browser")
-                _api_client = None
+                logger.warning(f"Apify init failed: {e} — falling back")
+                _apify_client = None
+
+        if not _apify_client:
+            _fb_token = os.getenv("FB_ACCESS_TOKEN", "").strip()
+            if _fb_token:
+                try:
+                    from .api import FBApiClient
+                    _api_client = FBApiClient(_fb_token)
+                    if _api_client.verify_token():
+                        logger.info("FB API token valid — Phase 1 will use API (fast mode)")
+                    else:
+                        logger.warning("FB_ACCESS_TOKEN invalid — falling back to browser")
+                        _api_client = None
+                except Exception as e:
+                    logger.warning(f"FB API init failed: {e} — falling back to browser")
+                    _api_client = None
 
         browser = AdsLibraryBrowser(countries=self.countries, headless=self.headless)
         browser.start()
@@ -658,7 +672,7 @@ class FBAdsScraper:
             # ── Phase 1: Keyword sweep ────────────────────────────────────
             logger.info(
                 "Phase 1: Keyword sweep"
-                + (" [API fast-mode]" if _api_client else " [browser mode]")
+                + (" [Apify]" if _apify_client else " [FB API fast-mode]" if _api_client else " [browser mode]")
             )
 
             # Resume from saved queue if available, otherwise start from seeds.
@@ -690,7 +704,15 @@ class FBAdsScraper:
 
                 logger.info(f"[{depth}] '{keyword}' ({total}/{self.max_keywords})")
 
-                if _api_client:
+                if _apify_client:
+                    from .apify_client import apify_ad_to_standard as _apify_to_std
+                    raw_ads = _apify_client.search_keyword(
+                        keyword,
+                        countries=self.countries,
+                        limit=self.max_ads_per_keyword,
+                        days=self.days,
+                    )
+                elif _api_client:
                     raw_ads = _api_search_keyword(
                         _api_client, keyword,
                         countries=self.countries,
@@ -711,8 +733,10 @@ class FBAdsScraper:
                         self._seen_keys.add(key)
                         continue
                     self._seen_keys.add(key)
-                    # API ads are already in standard format; browser ads need conversion
-                    if _api_client:
+                    # Convert raw ad to standard format depending on source
+                    if _apify_client:
+                        ad = _apify_to_std(raw, keyword)
+                    elif _api_client:
                         ad = _api_ad_to_standard(raw, keyword)
                     else:
                         ad = _to_standard_ad(raw, keyword)
@@ -737,7 +761,7 @@ class FBAdsScraper:
                 # If a page already has >= 15 recent ads after this keyword, do an
                 # early Phase-2 browser visit so we don't wait until all keywords finish.
                 # Capped at 2 hot-checks per keyword to limit speed impact.
-                if browser and not _api_client:
+                if browser and not _api_client and not _apify_client:
                     _HOT_THRESHOLD = 15
                     _hot_checked = 0
                     for _hot_pid in list(_pages_this_keyword):
