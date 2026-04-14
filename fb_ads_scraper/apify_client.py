@@ -59,18 +59,18 @@ class ApifyAdsClient:
         country = (countries[0] if countries else "US").upper()
         search_url = _build_search_url(keyword, country)
 
-        run_input = {
-            "urls": [{"url": search_url}],
-            "scrapeAdDetails": True,
-            "limitPerSource": 0,
-            "count": limit,
-            "scrapePageAds.period": "",
+        # Strip None values — actor validates types strictly and None fields
+        # will fail with "must be X type" even when the field is optional.
+        run_input = {k: v for k, v in {
+            "urls":                       [{"url": search_url}],
+            "scrapeAdDetails":            True,
+            "limitPerSource":             0,
+            "count":                      limit,
+            "scrapePageAds.period":       "",
             "scrapePageAds.activeStatus": "all",
-            "scrapePageAds.sortBy": "impressions_desc",
-            "scrapePageAds.countryCode": "ALL",
-            "runTag": None,
-            "proxy": None,
-        }
+            "scrapePageAds.sortBy":       "impressions_desc",
+            "scrapePageAds.countryCode":  "ALL",
+        }.items() if v is not None}
 
         try:
             run = self._client.actor(self.actor_id).call(run_input=run_input)
