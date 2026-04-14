@@ -22,6 +22,8 @@ import sys
 import io
 from datetime import datetime
 
+logger = logging.getLogger(__name__)
+
 import click
 from dotenv import load_dotenv
 from rich.console import Console
