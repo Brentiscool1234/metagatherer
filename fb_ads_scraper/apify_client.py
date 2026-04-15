@@ -235,6 +235,13 @@ def apify_ad_to_standard(raw: dict, keyword: str) -> dict:
 
     ad_archive_id = str(raw.get("ad_archive_id") or raw.get("id") or "")
 
+    # is_active: Apify sets this; None/missing → assume active (safest default)
+    is_active = raw.get("is_active")
+    if is_active is None:
+        is_active = True
+    else:
+        is_active = bool(is_active)
+
     return {
         "_key":                f"{page_id}_{ad_archive_id}",
         "page_id":             page_id,
@@ -247,6 +254,7 @@ def apify_ad_to_standard(raw: dict, keyword: str) -> dict:
         "_start_date":         start_date,
         "_cta_url":            cta_url,
         "_has_shop_now":       False,
+        "_is_active":          is_active,
         # collation_count is "N adsets use this creative" — the primary scaling
         # signal under broad/ASC/DCT targeting.  Treat it as ad_versions so
         # the scoring engine sees the real reach of this creative.

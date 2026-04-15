@@ -71,12 +71,14 @@ def _setup_logging(verbose: bool):
               help="Minimum active ads per product cluster.")
 @click.option("--min-followers", default=10, show_default=True, type=int,
               help="Minimum page follower count.")
-@click.option("--max-followers", default=2000, show_default=True, type=int,
-              help="Maximum page follower count.")
-@click.option("--max-total-ads", default=0, show_default=True, type=int,
+@click.option("--max-followers", default=400, show_default=True, type=int,
+              help="Maximum page follower count. N8N-validated threshold: 400.")
+@click.option("--max-total-ads", default=250, show_default=True, type=int,
               help="Max total active ad versions per page (0 = no cap). "
-                   "Pages above this are likely large brands, not dropshippers. "
-                   "Recommended: 300.")
+                   "N8N-validated threshold: 250 removes heavy media buyers.")
+@click.option("--min-active-ratio", default=0.85, show_default=True, type=float,
+              help="Minimum fraction of a page's ads that must be active (0–1). "
+                   "N8N-validated threshold: 0.85. Use 0 to disable.")
 @click.option("--niche", "-n", default=None,
               help="Product niche to focus on (e.g. 'pet products', 'home fitness gear'). "
                    "AI will generate targeted seed keywords instead of generic ones.")
@@ -114,6 +116,7 @@ def _setup_logging(verbose: bool):
               help="Discord webhook URL for winner notifications (or set DISCORD_WEBHOOK_URL in .env).")
 def main(
     countries, days, min_ads, min_followers, max_followers, max_total_ads,
+    min_active_ratio,
     niche, keywords, max_keywords, keyword_depth, max_ads_per_keyword,
     video_only, require_shop_now, headless, output, no_csv,
     facebook, tiktok, tiktok_login, state_file, reset, verbose, until_winner,
@@ -195,6 +198,7 @@ def main(
             min_followers=min_followers,
             max_followers=max_followers,
             max_total_ads=max_total_ads,
+            min_active_ratio=min_active_ratio,
             prefer_video=True,
             require_shop_now=require_shop_now,
             max_keyword_depth=keyword_depth,

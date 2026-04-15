@@ -347,6 +347,8 @@ def _to_standard_ad(raw: dict, keyword: str) -> dict:
         # "N ads use this creative and text" — actual running ad count per card
         "_ad_versions": max(1, int(raw.get("ad_versions", 1) or 1)),
         "_cta_url": raw.get("cta_url", ""),
+        # Browser scrapes live library — all returned ads are active
+        "_is_active": True,
     }
 
 
@@ -428,6 +430,7 @@ def _api_ad_to_standard(api_ad: dict, keyword: str) -> dict:
         "_ad_versions": 1,          # API gives 1 record per creative
         "_cta_url": cta_url,
         "_key": api_ad.get("id", ""),
+        "_is_active": True,         # API only returns active ads
     }
 
 
@@ -508,8 +511,9 @@ class FBAdsScraper:
         days: int = 7,
         min_ads: int = 5,
         min_followers: int = 10,
-        max_followers: int = 2000,
-        max_total_ads: int = 0,
+        max_followers: int = 400,   # N8N validated: pages with 400+ likes are legacy brands
+        max_total_ads: int = 250,   # N8N validated: 250 cap removes heavy media buyers
+        min_active_ratio: float = 0.85,  # N8N validated: ≥85% of ads must still be active
         prefer_video: bool = True,
         require_shop_now: bool = False,
         max_keyword_depth: int = 3,
@@ -527,6 +531,7 @@ class FBAdsScraper:
         self.min_followers = min_followers
         self.max_followers = max_followers
         self.max_total_ads = max_total_ads  # 0 = no cap
+        self.min_active_ratio = min_active_ratio  # 0.0 = disabled
         self.prefer_video = prefer_video
         self.require_shop_now = require_shop_now
         self.max_keyword_depth = max_keyword_depth
@@ -1059,8 +1064,7 @@ class FBAdsScraper:
 
             # Upper ad count cap — pages with too many total active ads are
             # large commercial brands or media buyers, not dropshipping stores.
-            # (Validated workflow uses 250; we default to 0 = disabled so existing
-            # users aren't affected unless they set --max-total-ads explicitly.)
+            # (Validated workflow threshold: 250)
             if self.max_total_ads > 0:
                 page_total_versions = sum(a.get("_ad_versions", 1) for a in ads)
                 if page_total_versions > self.max_total_ads:
@@ -1070,6 +1074,24 @@ class FBAdsScraper:
                     )
                     stats["too_many_ads"] = stats.get("too_many_ads", 0) + 1
                     continue
+
+            # Active ratio filter — skip pages where most ads have already stopped.
+            # N8N validated threshold: ≥85% of the page's ads must be is_active=True.
+            # For browser/API mode every scraped ad is live so ratio is always 1.0;
+            # for Apify (active_status=all) some ads may have is_active=False.
+            if self.min_active_ratio > 0:
+                flagged_inactive = [a for a in ads if a.get("_is_active") is False]
+                if flagged_inactive:
+                    active_count = len(ads) - len(flagged_inactive)
+                    ratio = active_count / len(ads)
+                    if ratio < self.min_active_ratio:
+                        logger.debug(
+                            f"  SKIP {page_id}: active_ratio={ratio:.0%} "
+                            f"< {self.min_active_ratio:.0%} "
+                            f"({active_count}/{len(ads)} active)"
+                        )
+                        stats["low_active_ratio"] = stats.get("low_active_ratio", 0) + 1
+                        continue
 
             recent = [a for a in ads if _within_days(a, self.days)]
             if not recent:
@@ -1235,7 +1257,10 @@ class FBAdsScraper:
         logger.info(
             f"Filter stats — total:{stats['total']} blocked:{stats['blocked']} "
             f"junk:{stats['junk']} niche_miss:{stats['niche_miss']} "
-            f"follower_range:{stats['follower_range']} low_ads:{stats['low_ads']} "
+            f"follower_range:{stats['follower_range']} "
+            f"low_active_ratio:{stats.get('low_active_ratio', 0)} "
+            f"too_many_ads:{stats.get('too_many_ads', 0)} "
+            f"low_ads:{stats['low_ads']} "
             f"high_price:{stats['high_price']} "
             f"no_cta:{stats['no_cta']} passed:{stats['passed']}"
         )
