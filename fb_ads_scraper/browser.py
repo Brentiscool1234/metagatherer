@@ -36,21 +36,48 @@ MONTH_MAP = {
 
 
 def parse_follower_count(text: str) -> int:
+    """
+    Parse a follower/like count string into an integer.
+    Handles both orderings FB uses:
+      "54K followers"        / "54K follow this"  / "818 likes"  (number first)
+      "Followers · 54.2K"   / "Followers: 1.2M"                  (label first)
+    """
     t = text.lower().replace(",", "").strip()
-    # Covers: "54K follow this", "140.2K followers", "818 likes", "7.8K follow this"
-    m = re.search(r"([\d.]+)\s*([km])?\s*(?:follow(?:ers?)?(?:\s+this)?|likes?)", t)
-    if not m:
-        return 0
-    try:
-        num = float(m.group(1))
-        suffix = m.group(2)
-        if suffix == "k":
-            num *= 1_000
-        elif suffix == "m":
-            num *= 1_000_000
-        return int(num)
-    except ValueError:
-        return 0
+
+    def _parse_num(num_str: str, suffix: str) -> int:
+        try:
+            n = float(num_str)
+            s = (suffix or "").lower()
+            if s == "k":
+                n *= 1_000
+            elif s == "m":
+                n *= 1_000_000
+            return int(n)
+        except (ValueError, TypeError):
+            return 0
+
+    # Format A: "54K followers", "54K follow this", "818 likes", "7.8K people follow"
+    m = re.search(
+        r"([\d.]+)\s*([km])?\s*"
+        r"(?:follow(?:ers?)?(?:\s+this)?|likes?|people\s+follow)",
+        t,
+    )
+    if m:
+        v = _parse_num(m.group(1), m.group(2))
+        if v:
+            return v
+
+    # Format B: "followers · 54.2K", "followers: 1.2M", "likes · 818"
+    m2 = re.search(
+        r"(?:follow(?:ers?)?|likes?)\s*[·:\-\u00b7\u2022]?\s*([\d.]+)\s*([km]?)",
+        t,
+    )
+    if m2:
+        v = _parse_num(m2.group(1), m2.group(2))
+        if v:
+            return v
+
+    return 0
 
 
 def parse_date_text(text: str) -> Optional[str]:
@@ -122,11 +149,16 @@ try {
         var pageName = clean(link.textContent);
 
         var followerText = '';
-        var spans = Array.prototype.slice.call(container.querySelectorAll('span,div'));
+        var spans = Array.prototype.slice.call(container.querySelectorAll('span,div,p'));
         spans.forEach(function(el) {
             var t = (el.textContent || '').trim();
-            if (/[\d][\d,.]*\s*[KkMm]?\s*(likes?|followers?)/i.test(t) && t.length < 40) {
-                if (t.length > followerText.length) followerText = t;
+            if (t.length < 2 || t.length > 60) return;
+            // "54K followers" / "54K follow this" / "818 likes" (number first)
+            var ok1 = /[\d][\d,.]*\s*[KkMm]?\s*(likes?|followers?|follow this)/i.test(t);
+            // "followers · 54K" / "followers: 1.2M" (label first — current FB format)
+            var ok2 = /followers?\s*[·:\-\u00b7]?\s*[\d][\d,.]*\s*[KkMm]/i.test(t);
+            if ((ok1 || ok2) && t.length > followerText.length) {
+                followerText = t;
             }
         });
 
@@ -596,42 +628,58 @@ class AdsLibraryBrowser:
             self._dismiss_dialogs()
             self._wait_for_ads(timeout=10)
 
-            # Extract follower count — retry twice (header often renders after first JS pass)
+            # Extract follower count — retry up to 3 times (panel often renders late)
             _FOLLOWER_JS = r"""
+                // Strategy 1: scan specific advertiser-panel elements first
+                // (the <aside> / left-panel in the page-specific Ads Library view)
+                var panelCandidates = Array.prototype.slice.call(
+                    document.querySelectorAll('aside,header,[role="complementary"],[role="banner"]'));
+                panelCandidates = panelCandidates.concat(
+                    Array.prototype.slice.call(document.querySelectorAll('span,div,p')));
+                for (var pi = 0; pi < panelCandidates.length; pi++) {
+                    var pt = (panelCandidates[pi].textContent || '').trim();
+                    if (pt.length > 60 || pt.length < 2) continue;
+                    // "54K followers" / "54K follow this" / "818 likes" / "7.8K people follow"
+                    var pm = pt.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|follow this|likes?|people follow)/i);
+                    if (pm) return pt;
+                    // "followers · 54.2K" / "followers: 1.2M"
+                    var pm2 = pt.match(/followers?\s*[·:\-\u00b7]?\s*([\d][\d,\.]*\s*[KkMm])/i);
+                    if (pm2) return pt;
+                }
+                // Strategy 2: full page text scan
                 var t = document.body.innerText || '';
                 var patterns = [
-                    // "54K follow this" — Ads Library advertiser panel format
                     /([\d][\d,\.]*\s*[KkMm]?)\s*follow this/i,
-                    // "140.2K followers" / "818 likes"
                     /([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i,
-                    // "followers: 54K"
-                    /followers?\s*[:\u00b7\u2022·\-]?\s*([\d][\d,\.]*\s*[KkMm]?)/i,
-                    // "people follow"
-                    /([\d][\d,\.]*\s*[KkMm]?)\s*(?:people follow)/i,
-                    // "· 54K followers"
-                    /·\s*([\d][\d,\.]*\s*[KkMm]?)\s*(?:follow(?:ers?)?|likes?)/i,
+                    /([\d][\d,\.]*\s*[KkMm]?)\s*people follow/i,
+                    /followers?\s*[:\u00b7\u2022\xb7·\-]\s*([\d][\d,\.]*\s*[KkMm]?)/i,
+                    /[·\xb7]\s*([\d][\d,\.]*\s*[KkMm]?)\s*(follow(?:ers?)?|likes?)/i,
                 ];
                 for (var i = 0; i < patterns.length; i++) {
                     var m = t.match(patterns[i]);
                     if (m) return m[0];
                 }
+                // Strategy 3: aria-labels on any element
                 var metas = Array.prototype.slice.call(
-                    document.querySelectorAll('[aria-label],[data-testid]'));
+                    document.querySelectorAll('[aria-label]'));
                 for (var j = 0; j < metas.length; j++) {
                     var al = (metas[j].getAttribute('aria-label') || '');
                     var fm = al.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(follow(?:ers?)?|likes?)/i);
                     if (fm) return fm[0];
+                    var fm2 = al.match(/followers?\s*[·:\-]?\s*([\d][\d,\.]*\s*[KkMm])/i);
+                    if (fm2) return fm2[0];
                 }
                 return '';
             """
-            for _attempt in range(2):   # was 4 × 1.5s; now 2 × 0.8s
+            for _attempt in range(3):
                 try:
                     follower_text = self._driver.execute_script(_FOLLOWER_JS) or ""
                     if follower_text:
                         follower_count = parse_follower_count(follower_text)
-                        logger.debug(f"  Followers {page_id}: {follower_text} → {follower_count}")
-                        break
-                    time.sleep(0.8)
+                        logger.debug(f"  Followers {page_id}: {follower_text!r} → {follower_count}")
+                        if follower_count:
+                            break
+                    time.sleep(1.0)
                 except Exception:
                     break
 
@@ -793,24 +841,31 @@ class AdsLibraryBrowser:
 
             # Extract the follower count from the autocomplete dropdown
             follower_text = self._driver.execute_script(r"""
+                // Scan autocomplete suggestion rows first (most targeted)
+                var items = Array.prototype.slice.call(
+                    document.querySelectorAll(
+                        '[role="option"],[role="listitem"],[role="suggestion"],' +
+                        '[data-testid*="suggest"],[class*="suggest"]'));
+                for (var j = 0; j < items.length; j++) {
+                    var it = (items[j].innerText || items[j].textContent || '').trim();
+                    // "54K follow this" / "54K followers"
+                    var fm = it.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(follow(?:ers?)?(?:\s+this)?|likes?)/i);
+                    if (fm) return fm[0];
+                    // "followers · 54K"
+                    var fm2 = it.match(/followers?\s*[·:\-\u00b7]?\s*([\d][\d,\.]*\s*[KkMm])/i);
+                    if (fm2) return fm2[0];
+                }
+                // Fall back to full page text
                 var t = document.body.innerText || '';
-                // "54K follow this" — the Advertisers autocomplete format
                 var patterns = [
                     /([\d][\d,\.]*\s*[KkMm]?)\s*follow this/i,
                     /([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|likes?)/i,
-                    /·\s*([\d][\d,\.]*\s*[KkMm]?)\s*follow/i,
+                    /followers?\s*[·:\-\u00b7]?\s*([\d][\d,\.]*\s*[KkMm])/i,
+                    /[·\xb7]\s*([\d][\d,\.]*\s*[KkMm]?)\s*follow/i,
                 ];
                 for (var i = 0; i < patterns.length; i++) {
                     var m = t.match(patterns[i]);
                     if (m) return m[0];
-                }
-                // Also scan aria-labels on suggestion items
-                var items = Array.prototype.slice.call(
-                    document.querySelectorAll('[role="option"],[role="listitem"]'));
-                for (var j = 0; j < items.length; j++) {
-                    var it = (items[j].innerText || '');
-                    var fm = it.match(/([\d][\d,\.]*\s*[KkMm]?)\s*follow/i);
-                    if (fm) return fm[0];
                 }
                 return '';
             """) or ""
