@@ -321,12 +321,31 @@ NICHE_TERMS: dict[str, set[str]] = {
 }
 
 
+def _extract_page_id(page_url: str) -> str:
+    """
+    Extract a stable page identifier from a Facebook page URL.
+
+    Handles both formats:
+      https://www.facebook.com/somebrand         → "somebrand"
+      https://www.facebook.com/profile.php?id=123456789 → "123456789"  (numeric)
+    """
+    if not page_url:
+        return "unknown"
+    # profile.php?id=NUMERIC — very common for newer/smaller pages
+    import re as _re2
+    m = _re2.search(r"profile\.php\?.*?id=(\d+)", page_url)
+    if m:
+        return m.group(1)
+    slug = page_url.split("facebook.com/")[-1].split("?")[0].strip("/")
+    # Avoid accidental capture of non-page paths
+    if not slug or "/" in slug or slug.lower() in ("", "ads", "pages", "groups"):
+        return "unknown"
+    return slug
+
+
 def _to_standard_ad(raw: dict, keyword: str) -> dict:
     page_url = raw.get("page_url", "")
-    page_id = (
-        page_url.split("facebook.com/")[-1].split("?")[0].strip("/")
-        if page_url else "unknown"
-    )
+    page_id  = _extract_page_id(page_url)
     return {
         "id": raw.get("_key", ""),
         "page_id": page_id,
@@ -472,11 +491,15 @@ class WinningProduct:
             "sample_ad_body": self.sample_ad_body,
             "snapshot_url": self.sample_snapshot_url,
             "ads_library_url": (
-                f"https://www.facebook.com/ads/library/?active_status=active"
-                f"&ad_type=all&country=US&q={self.page_id}&search_type=page"
-                if not self.page_id.isdigit() else
-                f"https://www.facebook.com/ads/library/?active_status=active"
-                f"&ad_type=all&country=US&search_type=page&view_all_page_id={self.page_id}"
+                # Numeric page IDs → direct page view via view_all_page_id (most reliable)
+                f"https://www.facebook.com/ads/library/?active_status=all"
+                f"&ad_type=all&country=US&search_type=page"
+                f"&view_all_page_id={self.page_id}"
+                if self.page_id.isdigit() else
+                # Username slug → Ads Library search by page name
+                f"https://www.facebook.com/ads/library/?active_status=all"
+                f"&ad_type=all&country=US&search_type=page"
+                f"&q={self.page_name or self.page_id}"
             ),
             "publisher_platforms": ", ".join(self.publisher_platforms),
             "keywords_matched": ", ".join(self.keywords_matched),
