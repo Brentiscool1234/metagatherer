@@ -116,6 +116,8 @@ def analyze_market(
         structure = "fragmented"
 
     # ── Entry timing ─────────────────────────────────────────────────────────
+    # "too_late" only when BOTH the market is old AND big brands control it.
+    # A crowded-but-brand-free market is "late" (still viable), not "too_late".
     if structure == "entrenched":
         entry_timing = "too_late"
     elif structure == "multi_new" and avg_age < 20:
@@ -124,8 +126,10 @@ def analyze_market(
         entry_timing = "good"
     elif avg_age < 70 and big_brands <= 1:
         entry_timing = "late"
+    elif avg_age >= 70 and big_brands >= 2:
+        entry_timing = "too_late"  # old market AND dominated by big brands
     else:
-        entry_timing = "too_late"
+        entry_timing = "late"  # old-ish but no dominant brands — still viable
 
     return {
         "structure":                structure,
@@ -152,6 +156,14 @@ _STOP_WORDS = {
     "at", "on", "be", "so", "up", "if", "as", "into", "by", "was",
 }
 
+# Page name fragments that indicate non-product pages (content, media, aggregators)
+_NON_PRODUCT_PAGE_SIGNALS = {
+    "ebook", "e-book", "fanfic", "fanfiction", "fanpage", "fan page",
+    "novel", "wattpad", "story", "stories", "read free", "book club",
+    "news", "blog", "magazine", "newsletter", "review", "affiliate",
+    "gossip", "viral", "trending", "quotes", "meme",
+}
+
 
 def find_competitors(
     winner_page_id: str,
@@ -176,16 +188,24 @@ def find_competitors(
         if page_id == winner_page_id:
             continue
 
+        # Skip non-product pages (content/media/ebook pages)
+        _pname_lower = next(
+            (a.get("page_name", "").lower() for a in ads if a.get("page_name")), ""
+        )
+        if any(sig in _pname_lower for sig in _NON_PRODUCT_PAGE_SIGNALS):
+            continue
+
         # Keyword overlap
         page_keywords = {a.get("_keyword", "") for a in ads if a.get("_keyword")}
         shared_kws = page_keywords & winner_keywords
 
         # Ad-copy text overlap
-        page_text   = _ad_wordset(ads[:5])
+        page_text    = _ad_wordset(ads[:5])
         common_words = winner_text & page_text - _STOP_WORDS
-        text_score  = len(common_words)
+        text_score   = len(common_words)
 
-        if len(shared_kws) < 2 and text_score < 8:
+        # Raised from 8 → 12 to reduce noise from loosely related pages
+        if len(shared_kws) < 2 and text_score < 12:
             continue
 
         page_name = next(
@@ -263,7 +283,9 @@ def classify_opportunity(
     entrenched    = (market or {}).get("entrenched", False)
     entry         = (market or {}).get("entry_timing", "good")
 
-    if entrenched or entry == "too_late":
+    # Only a truly entrenched market (old big brands dominating) blocks entry entirely.
+    # "too_late" entry timing is a headwind, not a wall — downgrade tier, don't kill it.
+    if entrenched:
         return "bad_opportunity", OPPORTUNITY_TIER["bad_opportunity"]
 
     if score >= 7.0 and not has_high_risk and entry in ("early", "good"):
@@ -271,6 +293,10 @@ def classify_opportunity(
 
     if score >= 7.0 and has_high_risk:
         return "risky_winner", OPPORTUNITY_TIER["risky_winner"]
+
+    if score >= 7.0 and entry == "too_late":
+        # High score but late market — downgrade to good_test (viable, move fast)
+        return "good_test", OPPORTUNITY_TIER["good_test"]
 
     if score >= 5.0:
         return "good_test", OPPORTUNITY_TIER["good_test"]

@@ -200,7 +200,19 @@ def apify_ad_to_standard(raw: dict, keyword: str) -> dict:
             or raw.get("start_date")
             or ""
         )
-        start_date = str(start_raw)[:10] if start_raw else ""
+        if start_raw:
+            from datetime import datetime, timezone as _tz
+            s = str(start_raw).strip()
+            # Unix timestamp (integer seconds) — e.g. 1770019200 → "2026-01-03"
+            if s.isdigit() and len(s) >= 8:
+                try:
+                    start_date = datetime.fromtimestamp(
+                        int(s), tz=_tz.utc
+                    ).strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+            elif len(s) >= 10:
+                start_date = s[:10]  # already YYYY-MM-DD or ISO string
 
     # ── CTA / snapshot URL ────────────────────────────────────────────────────
     cta_url = (

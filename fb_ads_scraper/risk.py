@@ -12,6 +12,23 @@ import re
 from typing import NamedTuple
 
 
+def _kw_hits(text: str, keywords: set) -> list[str]:
+    """
+    Case-insensitive keyword scan.
+    Single-word keywords use word boundaries (so "eat" won't match "treat").
+    Multi-word phrases use plain substring matching.
+    """
+    hits = []
+    for kw in keywords:
+        if " " in kw:
+            if kw in text:
+                hits.append(kw)
+        else:
+            if re.search(r"\b" + re.escape(kw) + r"\b", text):
+                hits.append(kw)
+    return hits
+
+
 class RiskFlag(NamedTuple):
     code: str
     label: str
@@ -120,7 +137,7 @@ def detect_risks(
     flags: list[RiskFlag] = []
 
     # ── Ingestible / supplement ───────────────────────────────────────────────
-    ingest_hits = [kw for kw in _INGESTIBLE if kw in text]
+    ingest_hits = _kw_hits(text, _INGESTIBLE)
     if ingest_hits:
         flags.append(RiskFlag(
             code="ingestible",
@@ -134,7 +151,7 @@ def detect_risks(
         ))
 
     # ── Child-health-adjacent ─────────────────────────────────────────────────
-    child_hits = [kw for kw in _CHILD_HEALTH if kw in text]
+    child_hits = _kw_hits(text, _CHILD_HEALTH)
     if child_hits:
         flags.append(RiskFlag(
             code="child_health",
@@ -148,7 +165,7 @@ def detect_risks(
         ))
 
     # ── Medical / health claims ───────────────────────────────────────────────
-    med_word_hits = [w for w in _MEDICAL_CLAIM_WORDS if w in text]
+    med_word_hits = _kw_hits(text, _MEDICAL_CLAIM_WORDS)
     med_pattern_hits = [p for p in _MEDICAL_CLAIM_PATTERNS if re.search(p, text, re.I)]
     if med_word_hits or med_pattern_hits:
         sample = (med_word_hits[:3] or [p[:30] for p in med_pattern_hits[:2]])
@@ -164,7 +181,7 @@ def detect_risks(
         ))
 
     # ── Apparel / fit risk ────────────────────────────────────────────────────
-    apparel_hits = [kw for kw in _APPAREL_SIGNALS if kw in text]
+    apparel_hits = _kw_hits(text, _APPAREL_SIGNALS)
     if len(apparel_hits) >= 2:
         flags.append(RiskFlag(
             code="apparel",
@@ -178,8 +195,8 @@ def detect_risks(
         ))
 
     # ── Patent / IP risk ─────────────────────────────────────────────────────
-    ip_phrase_hits = [p for p in _PATENT_RISK_PHRASES if p in text]
-    ip_brand_hits  = [b for b in _BIG_IP_BRANDS if b in text]
+    ip_phrase_hits = _kw_hits(text, _PATENT_RISK_PHRASES)
+    ip_brand_hits  = _kw_hits(text, _BIG_IP_BRANDS)
     if ip_phrase_hits or ip_brand_hits:
         sample = (ip_phrase_hits + ip_brand_hits)[:4]
         flags.append(RiskFlag(
