@@ -127,7 +127,7 @@ def apify_ad_to_standard(raw: dict, keyword: str) -> dict:
         or (f"https://www.facebook.com/{page_id}" if page_id else "")
     )
 
-    # Follower / likes count — may be nested in snapshot or advertiser blob
+    # Follower / likes count — actor may nest it in several locations
     followers = 0
     try:
         adv  = raw.get("advertiser") or {}
@@ -136,9 +136,15 @@ def apify_ad_to_standard(raw: dict, keyword: str) -> dict:
     except Exception:
         pass
     if not followers:
+        # snapshot contains page_like_count / page_follower_count in many actor versions
         followers = int(
-            raw.get("page_likes") or raw.get("pageLikes")
-            or snap.get("page_likes") or 0
+            snap.get("page_like_count")
+            or snap.get("page_follower_count")
+            or snap.get("follower_count")
+            or snap.get("page_likes")
+            or raw.get("page_likes")
+            or raw.get("pageLikes")
+            or 0
         )
 
     # ── Ad body / creative text ───────────────────────────────────────────────
@@ -235,6 +241,8 @@ def apify_ad_to_standard(raw: dict, keyword: str) -> dict:
         "page_name":           page_name,
         "page_url":            page_url,
         "page_followers":      followers,
+        # _follower_count mirrors page_followers so scraper._avg_followers() works
+        "_follower_count":     followers,
         "ad_creative_bodies":  bodies,
         "_start_date":         start_date,
         "_cta_url":            cta_url,

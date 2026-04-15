@@ -759,6 +759,14 @@ class FBAdsScraper:
                         pname = ad.get("page_name", "")
                         if pname:
                             all_page_names_for_ai.append(pname)
+                        # Propagate follower count from Apify data so Phase 2
+                        # pre-check and _evaluate_pages have a real value even
+                        # before a browser visit.  Don't overwrite a browser-
+                        # verified count (always more accurate).
+                        if _apify_client and page_id not in self._page_followers:
+                            pf = ad.get("page_followers", 0) or 0
+                            if pf > 0:
+                                self._page_followers[page_id] = pf
 
                 # Update saturation density for this keyword
                 self._keyword_page_density[keyword] = len(_pages_this_keyword)
@@ -987,7 +995,12 @@ class FBAdsScraper:
         return results
 
     def _avg_followers(self, ads: list[dict]) -> int:
-        counts = [a["_follower_count"] for a in ads if a.get("_follower_count", 0) > 0]
+        # Check both _follower_count (browser/API ads) and page_followers (Apify ads)
+        counts = [
+            a.get("_follower_count") or a.get("page_followers") or 0
+            for a in ads
+        ]
+        counts = [c for c in counts if c > 0]
         return int(sum(counts) / len(counts)) if counts else 0
 
     def _evaluate_pages(
