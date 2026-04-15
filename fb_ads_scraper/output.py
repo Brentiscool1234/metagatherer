@@ -15,6 +15,8 @@ from rich import box
 
 from .scraper import WinningProduct
 from .scoring import CRITERIA, WINNER_THRESHOLD, NEAR_MISS_THRESHOLD
+from .risk import risk_summary
+from .market_intel import OPPORTUNITY_TIER, ENTRY_TIMING, STRUCTURE
 
 console = Console()
 
@@ -119,6 +121,27 @@ def _ads_library_url(page_id: str, country: str = "US") -> str:
     return "https://www.facebook.com/ads/library/?" + urlencode(params)
 
 
+def _tier_badge(w: WinningProduct) -> str:
+    tier = getattr(w, "opportunity_tier", "") or ""
+    colors = {
+        "proven_winner":   "bright_green",
+        "good_test":       "yellow",
+        "risky_winner":    "dark_orange",
+        "bad_opportunity": "red",
+        "weak_signal":     "dim",
+    }
+    labels = {
+        "proven_winner":   "✅ Winner",
+        "good_test":       "🟡 Test",
+        "risky_winner":    "⚠  Risky",
+        "bad_opportunity": "🚫 Bad",
+        "weak_signal":     "📉 Weak",
+    }
+    c = colors.get(tier, "dim")
+    l = labels.get(tier, "?")
+    return f"[{c}]{l}[/{c}]"
+
+
 def _render_table(products: list[WinningProduct], show_rank: bool):
     table = Table(box=box.ROUNDED, show_lines=True, expand=True)
 
@@ -126,7 +149,9 @@ def _render_table(products: list[WinningProduct], show_rank: bool):
         table.add_column("#", style="dim", width=3, justify="right")
     table.add_column("Page / Store", style="bold", min_width=18)
     table.add_column("Score", min_width=26)
+    table.add_column("Tier", min_width=10)
     table.add_column("Stage", width=6)
+    table.add_column("Entry", width=7)
     table.add_column("Ads", justify="center", width=5)
     table.add_column("Followers", justify="right", width=11)
     table.add_column("Vid", justify="center", width=4)
@@ -163,8 +188,18 @@ def _render_table(products: list[WinningProduct], show_rank: bool):
 
         page_display = f"[link={w.page_url}]{w.page_name}[/link]" if w.page_url else w.page_name
 
-        row = [page_display, bar, _stage_short(w), ad_str, fol_str,
-               _bool_icon(w.is_video),
+        # Entry timing short label
+        mi = getattr(w, "market_intel", None) or {}
+        entry = mi.get("entry_timing", "")
+        entry_colors = {"early": "bright_green", "good": "yellow",
+                        "late": "dark_orange", "too_late": "red"}
+        entry_short = {"early": "🟢 Early", "good": "🟡 Good",
+                       "late": "🟠 Late", "too_late": "🔴 Late"}
+        ec = entry_colors.get(entry, "dim")
+        entry_str = f"[{ec}]{entry_short.get(entry, '?')}[/{ec}]"
+
+        row = [page_display, bar, _tier_badge(w), _stage_short(w), entry_str,
+               ad_str, fol_str, _bool_icon(w.is_video),
                shopify_icon, store, lib_link]
         if show_rank:
             row = [str(i)] + row
@@ -245,8 +280,58 @@ def _print_detail_card(w: WinningProduct, rank: int):
     else:
         sourcing_line = ""
 
+    # ── Risk flags ───────────────────────────────────────────────────────────
+    risk_flags = getattr(w, "risk_flags", []) or []
+    if risk_flags:
+        risk_lines = []
+        for rf in risk_flags:
+            sev_color = {"high": "red", "medium": "dark_orange", "low": "yellow"}.get(rf.severity, "dim")
+            risk_lines.append(
+                f"  [{sev_color}]⚑ {rf.label.upper()}[/{sev_color}]  {rf.reason}"
+            )
+        risk_block = "[bold red]RISK FLAGS:[/bold red]\n" + "\n".join(risk_lines)
+    else:
+        risk_block = "[dim]✓ No risk flags[/dim]"
+
+    # ── Market intel ──────────────────────────────────────────────────────────
+    mi = getattr(w, "market_intel", None) or {}
+    if mi:
+        struct_label = mi.get("structure_label", "?")
+        entry_label  = mi.get("entry_timing_label", "?")
+        new_adv  = mi.get("new_advertisers", 0)
+        old_adv  = mi.get("established_advertisers", 0)
+        big      = mi.get("big_brands", 0)
+        avg_age  = mi.get("avg_age_days", 0)
+        market_block = (
+            f"[bold]Market:[/bold]    {struct_label}  |  {entry_label}\n"
+            f"           New advertisers: {new_adv}  •  Established (>90d): {old_adv}"
+            f"  •  Big brands (5k+ fol): {big}  •  Avg category age: {avg_age}d"
+        )
+    else:
+        market_block = ""
+
+    # ── Competitor list ───────────────────────────────────────────────────────
+    competitors = getattr(w, "competitors", []) or []
+    if competitors:
+        comp_rows = []
+        for c in competitors[:5]:
+            age_str = f"{c['age_days']}d" if c.get("age_days") is not None else "?"
+            fol_c   = f"{c['followers']:,}" if c.get("followers") else "?"
+            comp_rows.append(
+                f"  • [link={c['ads_library_url']}]{c['page_name']}[/link]"
+                f"  {c['ad_versions']} ads  {fol_c} fol  age:{age_str}"
+                f"  [dim]sim:{c['text_similarity']}[/dim]"
+            )
+        comp_block = "[bold]Competitors:[/bold]\n" + "\n".join(comp_rows)
+        if len(competitors) > 5:
+            comp_block += f"\n  [dim]… {len(competitors) - 5} more[/dim]"
+    else:
+        comp_block = ""
+
     lines = [
-        f"[bold]{_score_bar(score)}[/bold]",
+        f"[bold]{_score_bar(score)}[/bold]   {getattr(w, 'opportunity_label', '')}",
+        f"[dim]{'─' * 50}[/dim]",
+        risk_block,
         f"[dim]{'─' * 50}[/dim]",
         f"[bold]Page:[/bold]      {w.page_name}  •  {fol_str} followers",
         f"[bold]Page URL:[/bold]  [cyan][link={w.page_url}]{w.page_url or '—'}[/link][/cyan]",
@@ -261,6 +346,8 @@ def _print_detail_card(w: WinningProduct, rank: int):
         f"[bold]Platforms:[/bold] {', '.join(w.publisher_platforms) or '—'}",
         f"[bold]Ad dates:[/bold]  {', '.join(w.ad_start_dates[:5]) or '—'}{'...' if len(w.ad_start_dates) > 5 else ''}",
         f"[bold]Keywords:[/bold]  [italic]{', '.join(w.keywords_matched[:6]) or '—'}[/italic]",
+        market_block,
+        comp_block,
         "",
         f"[bold]Score breakdown:[/bold]",
         f"  {_breakdown_line(breakdown)}",
@@ -268,10 +355,20 @@ def _print_detail_card(w: WinningProduct, rank: int):
         f"[dim]Sample ad:[/dim] {(w.sample_ad_body or '—')[:200]}",
     ]
     lines = [l for l in lines if l]  # drop empty optional lines
+
+    # Border colour reflects tier
+    tier = getattr(w, "opportunity_tier", "")
+    border = {
+        "proven_winner": "bright_green",
+        "good_test": "yellow",
+        "risky_winner": "dark_orange",
+        "bad_opportunity": "red",
+    }.get(tier, "bright_green" if score >= WINNER_THRESHOLD else "yellow")
+
     console.print(Panel(
         "\n".join(lines),
         title=f"[bold]#{rank} — {w.page_name}[/bold]",
-        border_style="bright_green" if score >= WINNER_THRESHOLD else "yellow",
+        border_style=border,
         expand=False,
     ))
     console.print()

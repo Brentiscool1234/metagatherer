@@ -518,12 +518,27 @@ class WinningProduct:
             "gross_profit_usd": sourcing.get("gross_profit", ""),
             "break_even_roas": sourcing.get("break_even_roas", ""),
             "margin_viable": sourcing.get("margin_viable", ""),
-            # ── New signals ──────────────────────────────────────────────────
+            # ── Market signals ───────────────────────────────────────────────
             "saturation_count": getattr(self, "saturation_count", 0),
             "page_age_days": getattr(self, "page_age_days", ""),
             "recent_ad_count": getattr(self, "recent_ad_count", 0),
             "freshness_rate": getattr(self, "freshness_rate", ""),
             "market_stage": getattr(self, "market_stage", ""),
+            # ── Opportunity & risk ───────────────────────────────────────────
+            "opportunity_tier": getattr(self, "opportunity_tier", ""),
+            "opportunity_label": getattr(self, "opportunity_label", ""),
+            "risk_flags": "; ".join(
+                f"{f.code}({f.severity})" for f in getattr(self, "risk_flags", [])
+            ),
+            # ── Market intel ─────────────────────────────────────────────────
+            "market_structure": (getattr(self, "market_intel", None) or {}).get("structure", ""),
+            "entry_timing": (getattr(self, "market_intel", None) or {}).get("entry_timing", ""),
+            "new_advertisers": (getattr(self, "market_intel", None) or {}).get("new_advertisers", ""),
+            "established_advertisers": (getattr(self, "market_intel", None) or {}).get("established_advertisers", ""),
+            "competitor_count": len(getattr(self, "competitors", []) or []),
+            "top_competitors": "; ".join(
+                c["page_name"] for c in (getattr(self, "competitors", []) or [])[:5]
+            ),
         }
 
 
@@ -1276,6 +1291,47 @@ class FBAdsScraper:
 
             # Re-sort after penalties
             winners.sort(key=lambda w: -w.score)
+
+        # ── Risk flags, market intel, competitors, opportunity tier ──────────
+        from .risk import detect_risks
+        from .market_intel import analyze_market, find_competitors, classify_opportunity
+
+        # Compute global market intel once (covers all pages in the scan)
+        global_market = analyze_market(self._page_ads, self._page_followers)
+
+        for w in winners:
+            # Product risk flags
+            bodies_list = [w.sample_ad_body] if w.sample_ad_body else []
+            w.risk_flags = detect_risks(
+                page_name=w.page_name,
+                ad_bodies=bodies_list,
+                store_url=getattr(w, "store_url", "") or "",
+                product_title=getattr(w, "sourcing_data", {}).get("shopify_product_title", ""),
+            )
+
+            # Market intelligence (product-level: only pages sharing this winner's keywords)
+            matched_kws  = set(w.keywords_matched or [])
+            product_pages = {
+                pid: ads for pid, ads in self._page_ads.items()
+                if self._page_keywords.get(pid, set()) & matched_kws
+            }
+            w.market_intel = analyze_market(product_pages, self._page_followers)
+
+            # Competitor list
+            w.competitors = find_competitors(
+                winner_page_id=w.page_id,
+                winner_keywords=matched_kws,
+                all_page_ads=product_pages,
+                all_page_followers=self._page_followers,
+            )
+
+            # Opportunity tier
+            w.opportunity_tier, w.opportunity_label = classify_opportunity(
+                score=w.score,
+                risk_flags=w.risk_flags,
+                market=w.market_intel,
+                market_stage=getattr(w, "market_stage", ""),
+            )
 
         logger.info(
             f"Filter stats — total:{stats['total']} blocked:{stats['blocked']} "
