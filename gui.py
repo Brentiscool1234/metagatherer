@@ -142,6 +142,33 @@ class App(tk.Tk):
         self.v_niche    = self._row_entry(left, "Niche", "e.g. dogs, fitness, jewelry")
         self.v_keywords = self._row_entry(left, "Extra keywords", "comma-separated")
 
+        # Niche queue — overnight chaining (one niche per line)
+        _nq_hdr = tk.Frame(left, bg=BG)
+        _nq_hdr.pack(fill="x", pady=(6, 0))
+        tk.Label(_nq_hdr, text="Niche queue", font=FONT, bg=BG, fg=FG,
+                 width=14, anchor="w").pack(side="left")
+        tk.Label(_nq_hdr, text="one per line · overnight chaining",
+                 font=("Segoe UI", 8), bg=BG, fg=FG_DIM).pack(side="left")
+        self._nq_placeholder = "fitness gear\njewelry\nhome gadgets"
+        self.niche_queue_box = tk.Text(
+            left, font=FONT, bg=BG2, fg=FG_DIM,
+            insertbackground=FG, bd=0,
+            highlightbackground=BG3, highlightthickness=1,
+            height=3, wrap="word")
+        self.niche_queue_box.insert("1.0", self._nq_placeholder)
+        self.niche_queue_box.pack(fill="x", pady=(2, 4))
+
+        def _nq_focus_in(e):
+            if self.niche_queue_box.get("1.0", "end").strip() == self._nq_placeholder:
+                self.niche_queue_box.delete("1.0", "end")
+                self.niche_queue_box.config(fg=FG)
+        def _nq_focus_out(e):
+            if not self.niche_queue_box.get("1.0", "end").strip():
+                self.niche_queue_box.insert("1.0", self._nq_placeholder)
+                self.niche_queue_box.config(fg=FG_DIM)
+        self.niche_queue_box.bind("<FocusIn>",  _nq_focus_in)
+        self.niche_queue_box.bind("<FocusOut>", _nq_focus_out)
+
         self._section(left, "Filters")
         self.v_country     = self._row_entry(left, "Country",       "US", width=6)
         self.v_days        = self._row_spin(left,  "Ad lookback",   1, 90,  7)
@@ -229,6 +256,24 @@ class App(tk.Tk):
         self._section(left, "Controls")
 
         self._check(left, "Keep scanning until winner", self.v_until_winner)
+
+        # Overnight mode — chain queued niches until N winners found
+        overnight_row = tk.Frame(left, bg=BG)
+        overnight_row.pack(fill="x", pady=1)
+        self.v_overnight = tk.BooleanVar(value=False)
+        tk.Checkbutton(overnight_row, text="Overnight — chain niches",
+                       variable=self.v_overnight, font=FONT,
+                       bg=BG, fg=FG, activebackground=BG, activeforeground=FG,
+                       selectcolor=BG3, cursor="hand2").pack(side="left")
+        tk.Label(overnight_row, text="→", font=FONT, bg=BG, fg=FG_DIM).pack(side="left", padx=4)
+        self.v_winner_target = tk.IntVar(value=10)
+        tk.Spinbox(overnight_row, from_=1, to=100, textvariable=self.v_winner_target,
+                   font=FONT, bg=BG2, fg=FG, buttonbackground=BG3,
+                   insertbackground=FG, bd=0,
+                   highlightbackground=BG3, highlightthickness=1,
+                   width=4).pack(side="left")
+        tk.Label(overnight_row, text="winners", font=FONT, bg=BG, fg=FG_DIM).pack(
+            side="left", padx=(4, 0))
 
         tk.Button(left, text="🗑  Clear ban list", font=FONT, bg=BG3, fg=FG,
                   activebackground=YELLOW, bd=0, pady=4, cursor="hand2",
@@ -693,21 +738,76 @@ class App(tk.Tk):
 
     # ── Scan subprocess ──────────────────────────────────────────────────────
 
+    def _build_niche_list(self):
+        """Return ordered list of niches to scan (primary field first, then queue)."""
+        niches = []
+        primary = self.v_niche.get().strip()
+        if primary and primary != "e.g. dogs, fitness, jewelry":
+            niches.append(primary)
+        queue_text = self.niche_queue_box.get("1.0", "end").strip()
+        if queue_text and queue_text != self._nq_placeholder:
+            for line in queue_text.splitlines():
+                line = line.strip()
+                if line and line not in niches:
+                    niches.append(line)
+        return niches if niches else [None]  # [None] = no niche specified
+
     def _run_scan(self):
+        niches = self._build_niche_list()
+        overnight = self.v_overnight.get()
+        winner_target = self.v_winner_target.get() if overnight else 0
+        total_winners = 0
+
+        kw_val = self.v_keywords.get().strip()
+        extra_kws = [k.strip() for k in kw_val.split(",")
+                     if k.strip() and k.strip() != "comma-separated"]
+
+        for i, niche in enumerate(niches):
+            if not self._running:
+                break
+            if winner_target > 0 and total_winners >= winner_target:
+                self._append("SUCCESS",
+                    f"\n✓ Overnight target reached: {total_winners}/{winner_target} "
+                    f"winner(s) found — stopping.\n")
+                break
+
+            if len(niches) > 1:
+                self._append("INFO",
+                    f"\n{'─' * 46}\n"
+                    f"  Niche {i + 1}/{len(niches)}: {niche or 'general'}"
+                    f"  (winners so far: {total_winners})\n"
+                    f"{'─' * 46}\n")
+
+            won = self._run_single_scan(niche, extra_kws if i == 0 else [])
+            total_winners += won
+
+            if overnight and winner_target > 0 and total_winners < winner_target \
+                    and i < len(niches) - 1:
+                self._append("INFO",
+                    f"  {total_winners}/{winner_target} winners — "
+                    f"moving to next niche...\n")
+
+        if overnight and winner_target > 0 and total_winners < winner_target:
+            self._append("WARNING",
+                f"\nOvernight run complete: {total_winners}/{winner_target} winners "
+                f"found across {len(niches)} niche(s).\n")
+
+        self.after(0, self._scan_done)
+
+    def _run_single_scan(self, niche, extra_kws=None):
+        """Run one scan subprocess. Returns number of winners found."""
+        import re as _re
         py  = sys.executable
         cmd = [py, os.path.join(os.path.dirname(__file__), "main.py")]
 
         if not self.v_facebook.get(): cmd.append("--no-facebook")
         if not self.v_tiktok.get():   cmd.append("--no-tiktok")
 
-        niche_val = self.v_niche.get().strip()
-        if niche_val and niche_val != "e.g. dogs, fitness, jewelry":
-            cmd += ["--niche", niche_val]
+        if niche:
+            cmd += ["--niche", niche]
 
-        kw_val = self.v_keywords.get().strip()
-        if kw_val and kw_val != "comma-separated":
-            for kw in [k.strip() for k in kw_val.split(",") if k.strip()]:
-                cmd += ["-k", kw]
+        for kw in (extra_kws or []):
+            cmd += ["-k", kw]
 
         cmd += [
             "--countries",        self.v_country.get().strip() or "US",
@@ -730,22 +830,23 @@ class App(tk.Tk):
         if out_path: cmd += ["--output", out_path]
 
         self._append("DIM", f"$ {' '.join(cmd)}\n\n")
-
-        # Push scan context to the expert so its analysis is parameterised
         self._get_expert().update_context(
-            niche=niche_val or "general",
+            niche=niche or "general",
             country=self.v_country.get().strip() or "US",
             days=self.v_days.get(),
             min_ads=self.v_min_ads.get(),
             min_followers=self.v_min_fol.get(),
             max_followers=self.v_max_fol.get(),
         )
-        self._chat_system("Scan started. I'll monitor progress and suggest keywords as we go.")
+        self._chat_system(
+            f"Scan started{f' — niche: {niche}' if niche else ''}. "
+            "I'll monitor progress and suggest keywords as we go.")
 
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
         env["PYTHONUTF8"] = "1"
 
+        winners_found = 0
         try:
             proc = subprocess.Popen(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -757,16 +858,21 @@ class App(tk.Tk):
                     break
                 self._classify_and_append(line)
                 self._parse_stats_from_line(line)
+                m = _re.search(r"(\d+)\s+winner", line.lower())
+                if m:
+                    winners_found = max(winners_found, int(m.group(1)))
             proc.wait()
             code = proc.returncode
             if code == 0:
-                self._append("SUCCESS", "\n✓ Scan complete.\n")
+                self._append("SUCCESS",
+                    f"\n✓ Scan complete ({niche or 'general'}) — "
+                    f"{winners_found} winner(s).\n")
             else:
                 self._append("WARNING", f"\nProcess exited with code {code}.\n")
         except Exception as exc:
             self._append("ERROR", f"\nFailed to start scan: {exc}\n")
-        finally:
-            self.after(0, self._scan_done)
+
+        return winners_found
 
     def _scan_done(self):
         self._running = False
