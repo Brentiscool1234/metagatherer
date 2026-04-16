@@ -738,6 +738,40 @@ class FBAdsScraper:
             all_bodies_for_ai: list[str] = []
             all_page_names_for_ai: list[str] = []
 
+            # ── Apify lookahead: keep N actor runs in-flight while the main
+            # loop processes the previous results.  Turns 30 serial 40s calls
+            # (20 min) into ~40s + 29×processing_time (~5 min) — 4-5× speedup.
+            _ap_pool = None
+            _ap_futures: dict = {}
+            _APIFY_LOOKAHEAD = 6
+
+            if _apify_client:
+                from concurrent.futures import ThreadPoolExecutor as _TPE
+                _ap_pool = _TPE(max_workers=_APIFY_LOOKAHEAD)
+
+                def _apify_prefetch_next():
+                    """Submit the next N unsearched queue keywords to Apify in parallel."""
+                    n = 0
+                    for _pkw, _ in list(queue):
+                        if n >= _APIFY_LOOKAHEAD:
+                            break
+                        if _pkw not in self._searched_keywords and _pkw not in _ap_futures:
+                            _ap_futures[_pkw] = _ap_pool.submit(
+                                _apify_client.search_keyword, _pkw,
+                                countries=self.countries,
+                                limit=self.max_ads_per_keyword,
+                                days=self.days,
+                            )
+                            n += 1
+
+                _apify_prefetch_next()  # kick off first batch before the loop starts
+
+            # AI expansion counter — only call Claude every N keywords to reduce
+            # redundant API calls (all_bodies_for_ai accumulates across keywords
+            # so calling every 3rd keyword uses practically the same data).
+            _AI_EXPAND_EVERY = 3
+            _ai_expand_counter = 0
+
             while queue and total < self.max_keywords:
                 keyword, depth = queue.popleft()
                 if keyword in self._searched_keywords:
@@ -749,12 +783,19 @@ class FBAdsScraper:
 
                 if _apify_client:
                     from .apify_client import apify_ad_to_standard as _apify_to_std
-                    raw_ads = _apify_client.search_keyword(
-                        keyword,
-                        countries=self.countries,
-                        limit=self.max_ads_per_keyword,
-                        days=self.days,
-                    )
+                    # Kick off the NEXT batch before blocking on this one —
+                    # while we wait for this result, the next N are already running.
+                    _apify_prefetch_next()
+                    if keyword in _ap_futures:
+                        raw_ads = _ap_futures.pop(keyword).result()
+                    else:
+                        # BFS-expanded keyword added after initial prefetch
+                        raw_ads = _apify_client.search_keyword(
+                            keyword,
+                            countries=self.countries,
+                            limit=self.max_ads_per_keyword,
+                            days=self.days,
+                        )
                 elif _api_client:
                     raw_ads = _api_search_keyword(
                         _api_client, keyword,
@@ -853,9 +894,15 @@ class FBAdsScraper:
                             logger.debug(f"  Hot-check failed for {_hot_pid}: {_hce}")
                         _hot_checked += 1
 
+                _ai_expand_counter += 1
                 if depth < self.max_keyword_depth and new_ads:
                     expanded = False
-                    if self.use_ai and all_bodies_for_ai:
+                    # Only call Claude every N keywords — all_bodies_for_ai accumulates
+                    # so the N-th call sees nearly identical data as the (N-1)-th.
+                    # Reduces AI API calls by ~3× with no meaningful quality loss.
+                    if (self.use_ai and all_bodies_for_ai
+                            and _ai_expand_counter >= _AI_EXPAND_EVERY):
+                        _ai_expand_counter = 0
                         # AI expansion: asks Claude for product-specific phrases
                         ai_kws = expand_keywords_with_ai(
                             all_bodies_for_ai[-60:],
@@ -961,6 +1008,17 @@ class FBAdsScraper:
                     logger.debug(f"  Phase 2 skip {pid}: already crawled, no prior win/near-miss")
                     continue
 
+                # When Apify sourced this page's data, the actor already returned
+                # the follower count and full collation_count — browser verification
+                # adds nothing and just wastes 15-25s per page.
+                if _apify_client and self._page_followers.get(pid, 0) > 0:
+                    logger.debug(
+                        f"  Phase 2 skip {pid}: Apify data complete "
+                        f"({self._page_followers[pid]} followers confirmed)"
+                    )
+                    self._visited_page_ids.add(pid)
+                    continue
+
                 fan_count = self._page_followers.get(pid, self._avg_followers(existing_ads))
                 # Skip pages obviously outside follower range
                 if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
@@ -998,9 +1056,22 @@ class FBAdsScraper:
         # Pre-check Shopify only for pages that have >12 active ads within the
         # lookback window — no point hitting HTTP for pages that will be filtered out.
         _SHOPIFY_AD_THRESHOLD = 12
+        _SHOPIFY_CACHE_FILE = "shopify_url_cache.json"
         shopify_cache: dict[str, tuple[bool, str]] = {}
         try:
             from .shopify import batch_check_shopify, decode_facebook_redirect as _dfr
+            import json as _json
+
+            # Load URLs checked in previous runs so we don't re-hit them
+            _disk_cache: dict[str, tuple[bool, str]] = {}
+            try:
+                if os.path.exists(_SHOPIFY_CACHE_FILE):
+                    _raw = _json.load(open(_SHOPIFY_CACHE_FILE))
+                    _disk_cache = {k: tuple(v) for k, v in _raw.items()}
+                    logger.debug(f"Shopify disk cache: {len(_disk_cache)} entries loaded")
+            except Exception:
+                pass
+
             all_real_urls: set[str] = set()
             for pid, _ads in self._page_ads.items():
                 # Count recent active ad versions for this page
@@ -1017,15 +1088,35 @@ class FBAdsScraper:
                         real = _dfr(cta)
                         if real and real.startswith("http"):
                             all_real_urls.add(real)
-            if all_real_urls:
+
+            # Apply disk cache — skip URLs we've already checked
+            shopify_cache.update(_disk_cache)
+            uncached_urls = {u for u in all_real_urls if u not in shopify_cache}
+
+            if uncached_urls:
                 logger.info(
-                    f"Pre-checking {len(all_real_urls)} store URLs for Shopify "
-                    f"(pages with >{_SHOPIFY_AD_THRESHOLD} active ads in last "
+                    f"Pre-checking {len(uncached_urls)} store URLs for Shopify "
+                    f"({len(all_real_urls) - len(uncached_urls)} served from cache, "
+                    f"pages with >{_SHOPIFY_AD_THRESHOLD} active ads in last "
                     f"{self.days}d, multithreaded HTTP)..."
                 )
-                shopify_cache = batch_check_shopify(all_real_urls)
+                new_results = batch_check_shopify(uncached_urls)
+                shopify_cache.update(new_results)
                 confirmed = sum(1 for v in shopify_cache.values() if v[0])
                 logger.info(f"  Shopify confirmed: {confirmed}/{len(all_real_urls)}")
+
+                # Persist newly checked results to disk
+                try:
+                    _to_save = {k: list(v) for k, v in shopify_cache.items()}
+                    with open(_SHOPIFY_CACHE_FILE, "w") as _sf:
+                        _json.dump(_to_save, _sf)
+                    logger.debug(f"Shopify cache saved: {len(_to_save)} entries")
+                except Exception:
+                    pass
+            elif all_real_urls:
+                logger.info(
+                    f"Shopify: all {len(all_real_urls)} URLs served from disk cache"
+                )
         except Exception as e:
             logger.debug(f"Shopify pre-check failed: {e}")
 
@@ -1033,6 +1124,8 @@ class FBAdsScraper:
         try:
             results = self._evaluate_pages(browser, shopify_cache=shopify_cache)
         finally:
+            if _ap_pool is not None:
+                _ap_pool.shutdown(wait=False)
             browser.stop()
 
         return results
