@@ -646,6 +646,10 @@ class App(tk.Tk):
             try: os.remove(f)
             except FileNotFoundError: pass
 
+        # Read the niche queue HERE in the main thread — tkinter Text.get() is
+        # not thread-safe and must not be called from the background scan thread.
+        self._niche_list = self._build_niche_list()
+
         self._running = True
         self._paused  = False
         self._keywords_done = 0
@@ -753,7 +757,8 @@ class App(tk.Tk):
         return niches if niches else [None]  # [None] = no niche specified
 
     def _run_scan(self):
-        niches = self._build_niche_list()
+        # _niche_list was built in _start() (main thread) — safe to read here.
+        niches = self._niche_list
         overnight = self.v_overnight.get()
         winner_target = self.v_winner_target.get() if overnight else 0
         total_winners = 0
@@ -762,37 +767,41 @@ class App(tk.Tk):
         extra_kws = [k.strip() for k in kw_val.split(",")
                      if k.strip() and k.strip() != "comma-separated"]
 
-        for i, niche in enumerate(niches):
-            if not self._running:
-                break
-            if winner_target > 0 and total_winners >= winner_target:
-                self._append("SUCCESS",
-                    f"\n✓ Overnight target reached: {total_winners}/{winner_target} "
-                    f"winner(s) found — stopping.\n")
-                break
+        try:
+            for i, niche in enumerate(niches):
+                if not self._running:
+                    break
+                if winner_target > 0 and total_winners >= winner_target:
+                    self._append("SUCCESS",
+                        f"\n✓ Overnight target reached: {total_winners}/{winner_target} "
+                        f"winner(s) found — stopping.\n")
+                    break
 
-            if len(niches) > 1:
-                self._append("INFO",
-                    f"\n{'─' * 46}\n"
-                    f"  Niche {i + 1}/{len(niches)}: {niche or 'general'}"
-                    f"  (winners so far: {total_winners})\n"
-                    f"{'─' * 46}\n")
+                if len(niches) > 1:
+                    self._append("INFO",
+                        f"\n{'─' * 46}\n"
+                        f"  Niche {i + 1}/{len(niches)}: {niche or 'general'}"
+                        f"  (winners so far: {total_winners})\n"
+                        f"{'─' * 46}\n")
 
-            won = self._run_single_scan(niche, extra_kws if i == 0 else [])
-            total_winners += won
+                won = self._run_single_scan(niche, extra_kws if i == 0 else [])
+                total_winners += won
 
-            if overnight and winner_target > 0 and total_winners < winner_target \
-                    and i < len(niches) - 1:
-                self._append("INFO",
-                    f"  {total_winners}/{winner_target} winners — "
-                    f"moving to next niche...\n")
+                if overnight and winner_target > 0 and total_winners < winner_target \
+                        and i < len(niches) - 1:
+                    self._append("INFO",
+                        f"  {total_winners}/{winner_target} winners — "
+                        f"moving to next niche...\n")
 
-        if overnight and winner_target > 0 and total_winners < winner_target:
-            self._append("WARNING",
-                f"\nOvernight run complete: {total_winners}/{winner_target} winners "
-                f"found across {len(niches)} niche(s).\n")
+            if overnight and winner_target > 0 and total_winners < winner_target:
+                self._append("WARNING",
+                    f"\nOvernight run complete: {total_winners}/{winner_target} winners "
+                    f"found across {len(niches)} niche(s).\n")
 
-        self.after(0, self._scan_done)
+        except Exception as exc:
+            self._append("ERROR", f"\nScan error: {exc}\n")
+        finally:
+            self.after(0, self._scan_done)
 
     def _run_single_scan(self, niche, extra_kws=None):
         """Run one scan subprocess. Returns number of winners found."""
