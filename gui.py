@@ -207,6 +207,9 @@ class App(tk.Tk):
                  bg=BG2, fg=FG, insertbackground=FG, bd=0,
                  highlightbackground=BG3, highlightthickness=1,
                  show="*").pack(side="left", expand=True, fill="x")
+        tk.Button(wh_row, text="Save", font=FONT, bg=BG3, fg=FG,
+                  activebackground=GREEN, bd=0, padx=6,
+                  command=self._save_discord_webhook).pack(side="left", padx=(4, 0))
         self._check(left, "Skip CSV export",                self.v_no_csv)
 
         out_row = tk.Frame(left, bg=BG)
@@ -544,6 +547,25 @@ class App(tk.Tk):
                 text=f"⚡ Apify mode active ({key[:8]}…)", fg=ACCENT2)
         else:
             self.apify_status.config(text="No key — Apify disabled", fg=FG_DIM)
+
+    def _save_discord_webhook(self):
+        url = self.v_discord_wh.get().strip()
+        env_path = self._env_path()
+        lines = []
+        try:
+            with open(env_path) as f:
+                lines = [l for l in f.readlines()
+                         if not l.startswith("DISCORD_WEBHOOK_URL=")]
+        except FileNotFoundError:
+            pass
+        if url:
+            lines.append(f"DISCORD_WEBHOOK_URL={url}\n")
+        with open(env_path, "w") as f:
+            f.writelines(lines)
+        if url:
+            os.environ["DISCORD_WEBHOOK_URL"] = url
+        else:
+            os.environ.pop("DISCORD_WEBHOOK_URL", None)
 
     def _browse_output(self):
         path = filedialog.asksaveasfilename(
