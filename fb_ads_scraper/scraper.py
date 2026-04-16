@@ -750,10 +750,13 @@ class FBAdsScraper:
                 _ap_pool = _TPE(max_workers=_APIFY_LOOKAHEAD)
 
                 def _apify_prefetch_next():
-                    """Submit the next N unsearched queue keywords to Apify in parallel."""
-                    n = 0
+                    """Keep up to LOOKAHEAD futures in-flight — submit only as slots open up."""
                     for _pkw, _ in list(queue):
-                        if n >= _APIFY_LOOKAHEAD:
+                        # Stop if pool is already full
+                        if len(_ap_futures) >= _APIFY_LOOKAHEAD:
+                            break
+                        # Don't submit beyond the keyword cap
+                        if total + len(_ap_futures) >= self.max_keywords:
                             break
                         if _pkw not in self._searched_keywords and _pkw not in _ap_futures:
                             _ap_futures[_pkw] = _ap_pool.submit(
@@ -762,7 +765,6 @@ class FBAdsScraper:
                                 limit=self.max_ads_per_keyword,
                                 days=self.days,
                             )
-                            n += 1
 
                 _apify_prefetch_next()  # kick off first batch before the loop starts
 
