@@ -61,9 +61,16 @@ class ApifyAdsClient:
 
         # Strip None values — actor validates types strictly and None fields
         # will fail with "must be X type" even when the field is optional.
-        # period: actor uses "Xd" format; empty string means "all time" (ignores days).
-        # countryCode: "ALL" overrides the country filter baked into the search URL.
-        period_str = f"{days}d" if days and days > 0 else ""
+        # The actor only accepts these exact period strings (not arbitrary "Nd" format).
+        _PERIOD_MAP = {1: "last24h", 7: "last7d", 14: "last14d", 30: "last30d"}
+        if days and days > 0:
+            # Pick the smallest allowed bucket that covers the requested days window.
+            period_str = next(
+                (v for k, v in sorted(_PERIOD_MAP.items()) if days <= k),
+                "last30d",  # days > 30 → use last30d (largest available)
+            )
+        else:
+            period_str = ""  # empty = all time
         run_input = {k: v for k, v in {
             "urls":                       [{"url": search_url}],
             "scrapeAdDetails":            True,
