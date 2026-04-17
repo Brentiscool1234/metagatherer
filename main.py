@@ -289,7 +289,7 @@ def main(
 
         # ── Discord winner notifications ────────────────────────────────────────
         _webhook = discord_webhook or os.environ.get("DISCORD_WEBHOOK_URL", "")
-        if _webhook and winners:
+        if _webhook and exportable:
             try:
                 from fb_ads_scraper.discord_notify import notify_winner
                 for _w in winners:
@@ -301,7 +301,7 @@ def main(
                     f"Discord: notified {len(winners)} winner(s) + {min(len(_near),3)} near-miss(es)"
                 )
             except Exception as _de:
-                logger.debug(f"Discord notify failed: {_de}")
+                logger.warning(f"Discord notify failed: {_de}")
     else:
         console.print("[dim]Facebook scan skipped (--no-facebook).[/dim]\n")
         # Use seed keywords for TikTok when Facebook is skipped

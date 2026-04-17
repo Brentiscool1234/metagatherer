@@ -237,6 +237,9 @@ class App(tk.Tk):
         tk.Button(wh_row, text="Save", font=FONT, bg=BG3, fg=FG,
                   activebackground=GREEN, bd=0, padx=6,
                   command=self._save_discord_webhook).pack(side="left", padx=(4, 0))
+        tk.Button(wh_row, text="Test", font=FONT, bg=BG3, fg=FG,
+                  activebackground=ACCENT2, bd=0, padx=6,
+                  command=self._test_discord).pack(side="left", padx=(2, 0))
         self._check(left, "Skip CSV export",                self.v_no_csv)
 
         out_row = tk.Frame(left, bg=BG)
@@ -611,6 +614,31 @@ class App(tk.Tk):
             os.environ["DISCORD_WEBHOOK_URL"] = url
         else:
             os.environ.pop("DISCORD_WEBHOOK_URL", None)
+
+    def _test_discord(self):
+        url = self.v_discord_wh.get().strip()
+        if not url:
+            self._append("WARNING", "Set a Discord webhook URL first.\n")
+            return
+        self._append("DIM", "Sending test Discord message...\n")
+        def _send():
+            try:
+                import json, urllib.request
+                payload = json.dumps({"embeds": [{
+                    "title": "✅ MetaGatherer — Test Notification",
+                    "description": "Discord webhook is connected and working.",
+                    "color": 0x2ECC71,
+                    "footer": {"text": "MetaGatherer"},
+                }]}).encode("utf-8")
+                req = urllib.request.Request(
+                    url, data=payload,
+                    headers={"Content-Type": "application/json"}, method="POST")
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    _ = r.read()
+                self.after(0, lambda: self._append("SUCCESS", "✓ Discord test sent successfully.\n"))
+            except Exception as e:
+                self.after(0, lambda: self._append("ERROR", f"Discord test failed: {e}\n"))
+        threading.Thread(target=_send, daemon=True).start()
 
     def _browse_output(self):
         path = filedialog.asksaveasfilename(
@@ -1015,6 +1043,15 @@ class App(tk.Tk):
     def _chat_worker(self, message: str):
         try:
             expert = self._get_expert()
+            # Inject live scan stats so the expert can answer progress questions accurately.
+            expert.update_context(
+                keywords_searched_count=len(self._stats["keywords_searched"]),
+                recent_keywords=self._stats["keywords_searched"][-8:],
+                total_ads_collected=self._stats["total_ads"],
+                products_found=self._stats["products_found"],
+                last_keyword=self._stats["last_keyword"],
+                scan_active=self._running,
+            )
             response = expert.chat(message)
             self.after(0, lambda r=response: self._chat_expert(r))
 
