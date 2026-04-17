@@ -91,8 +91,9 @@ class FBApiClient:
 
                     is_rate_limit = (
                         resp.status_code == 429
-                        or "User request limit reached" in resp.text
                         or fb_code in (4, 17, 32, 613)
+                        or "limit" in fb_msg.lower()
+                        or "User request limit reached" in resp.text
                     )
                     is_transient = resp.status_code in (500, 502, 503, 504)
 

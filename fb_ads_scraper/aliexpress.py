@@ -257,7 +257,7 @@ def _extract_prices_from_html(html: str) -> tuple[list, list]:
                 if raw:
                     try:
                         v = float(str(raw).replace(",", "."))
-                        if 0.30 <= v <= 300:
+                        if 0.50 <= v <= 250:  # align upper bound with MAX_PRODUCT_PRICE
                             prices.append(v)
                             # Extract item URL — productId or itemId field
                             item_id = (item.get("productId") or item.get("itemId")
@@ -344,7 +344,7 @@ def estimate_margin(store_price: float, source_price: float) -> dict:
     # Break-even ROAS = 1 / gross_margin_fraction
     # e.g. 70% margin → break-even at 1.43x ROAS
     # e.g. 30% margin → break-even at 3.33x ROAS
-    break_even_roas = round(100 / margin_pct, 2)
+    break_even_roas = round(100 / margin_pct, 2) if margin_pct > 0 else None
 
     return {
         "margin_pct": round(margin_pct, 1),

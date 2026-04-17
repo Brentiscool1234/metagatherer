@@ -255,11 +255,16 @@ Return ONLY the JSON array, nothing else."""
             logger.debug(f"AI verify step: no JSON array, falling back to raw candidates")
             verified = candidates
         else:
-            verified = json.loads(vmatch.group())
-            verified = [
-                k.lower().strip() for k in verified
-                if isinstance(k, str) and k.lower().strip() not in existing
-            ]
+            parsed = json.loads(vmatch.group())
+            if not isinstance(parsed, list):
+                # Model returned a dict or other type — fall back to candidates
+                logger.debug(f"AI verify step: got {type(parsed).__name__} not list, using candidates")
+                verified = candidates
+            else:
+                verified = [
+                    k.lower().strip() for k in parsed
+                    if isinstance(k, str) and k.lower().strip() not in existing
+                ]
 
         result = verified[:max_new]
         logger.info(

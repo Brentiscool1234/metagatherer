@@ -870,11 +870,11 @@ class FBAdsScraper:
                             all_page_names_for_ai.append(pname)
                         # Propagate follower count from Apify data so Phase 2
                         # pre-check and _evaluate_pages have a real value even
-                        # before a browser visit.  Don't overwrite a browser-
-                        # verified count (always more accurate).
-                        if _apify_client and page_id not in self._page_followers:
+                        # before a browser visit.  Always take the highest seen —
+                        # different ads from the same page can report different counts.
+                        if _apify_client:
                             pf = ad.get("page_followers", 0) or 0
-                            if pf > 0:
+                            if pf > self._page_followers.get(page_id, 0):
                                 self._page_followers[page_id] = pf
 
                 # Update saturation density for this keyword
