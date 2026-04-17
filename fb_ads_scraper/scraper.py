@@ -200,14 +200,22 @@ def _min_price_in_text(text: str) -> float:
 
 def _is_blocked(raw: dict) -> bool:
     """Return True if this ad should be skipped (marketplace, food, chemicals)."""
+    # Support both raw browser dicts (ad_body: str) and standardized dicts
+    # (ad_creative_bodies: list). Without this, Phase 1 food/chemical checks
+    # silently never fire because standardized dicts don't have "ad_body".
+    ad_body = raw.get("ad_body") or ""
+    if not ad_body:
+        bodies = raw.get("ad_creative_bodies") or []
+        if isinstance(bodies, list):
+            ad_body = " ".join(b for b in bodies if b)
     check = " ".join([
         (raw.get("page_name") or "").lower(),
         (raw.get("page_url") or "").lower(),
-        (raw.get("ad_body") or "").lower(),
+        ad_body.lower(),
     ])
     if any(term in check for term in _PLATFORM_BLOCKLIST):
         return True
-    body = (raw.get("ad_body") or "").lower()
+    body = ad_body.lower()
     if any(sig in body for sig in _FOOD_SIGNALS):
         return True
     if any(sig in body for sig in _CHEMICAL_SIGNALS):
@@ -614,6 +622,7 @@ class FBAdsScraper:
                 self._resume_queue = saved["queue"]
                 self._seen_winner_ids = saved.get("seen_winner_ids", set())
                 self._visited_page_ids = saved.get("visited_page_ids", set())
+                self._keyword_page_density = saved.get("keyword_page_density", {})
                 logger.info(
                     f"Resuming saved state — {state_summary(saved)}"
                 )
