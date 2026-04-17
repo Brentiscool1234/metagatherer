@@ -61,15 +61,18 @@ class ApifyAdsClient:
 
         # Strip None values — actor validates types strictly and None fields
         # will fail with "must be X type" even when the field is optional.
+        # period: actor uses "Xd" format; empty string means "all time" (ignores days).
+        # countryCode: "ALL" overrides the country filter baked into the search URL.
+        period_str = f"{days}d" if days and days > 0 else ""
         run_input = {k: v for k, v in {
             "urls":                       [{"url": search_url}],
             "scrapeAdDetails":            True,
             "limitPerSource":             0,
             "count":                      limit,
-            "scrapePageAds.period":       "",
+            "scrapePageAds.period":       period_str,
             "scrapePageAds.activeStatus": "all",
             "scrapePageAds.sortBy":       "impressions_desc",
-            "scrapePageAds.countryCode":  "ALL",
+            "scrapePageAds.countryCode":  country,
         }.items() if v is not None}
 
         try:

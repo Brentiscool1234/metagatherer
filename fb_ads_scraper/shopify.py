@@ -135,8 +135,18 @@ def batch_check_shopify(
     if not urls:
         return results
 
+    # Short-circuit: myshopify.com domains are confirmed Shopify without any HTTP.
+    needs_http: list[str] = []
+    for url in urls:
+        if not url:
+            continue
+        if "myshopify.com" in url.lower():
+            results[url] = (True, "myshopify.com domain")
+        else:
+            needs_http.append(url)
+
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        future_to_url = {pool.submit(is_shopify_store, url): url for url in urls if url}
+        future_to_url = {pool.submit(is_shopify_store, url): url for url in needs_http}
         for future in as_completed(future_to_url):
             url = future_to_url[future]
             try:

@@ -201,7 +201,7 @@ def find_competitors(
 
         # Ad-copy text overlap
         page_text    = _ad_wordset(ads[:5])
-        common_words = winner_text & page_text - _STOP_WORDS
+        common_words = (winner_text & page_text) - _STOP_WORDS
         text_score   = len(common_words)
 
         # Raised from 8 → 12 to reduce noise from loosely related pages

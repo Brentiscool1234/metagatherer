@@ -949,8 +949,11 @@ class App(tk.Tk):
         import re
         low = line.lower()
 
-        # "Scraped N ads for 'keyword'"
-        m = re.search(r"scraped\s+(\d+)\s+ads\s+for\s+'([^']+)'", low)
+        # Browser mode:  "Scraped N ads for 'keyword'"
+        # Apify mode:    "Apify: N raw items for 'keyword'"
+        m = re.search(
+            r"(?:scraped|apify:\s*)\s*(\d+)\s+(?:ads|raw items)\s+for\s+'([^']+)'", low
+        )
         if m:
             n, kw = int(m.group(1)), m.group(2)
             self._stats["last_keyword"] = kw

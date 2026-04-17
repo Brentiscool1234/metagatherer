@@ -180,7 +180,13 @@ _PRICE_RE = _re.compile(r'\$\s*([\d,]+(?:\.\d{1,2})?)')
 
 
 def _min_price_in_text(text: str) -> float:
-    """Return the smallest dollar amount found in text, or 0 if none found."""
+    """Return the largest dollar amount found in text, or 0 if none found.
+
+    We want the product price, not a shipping/discount figure. Ad copy like
+    "Save $5 — get yours for $49.99" would yield min=$5 (shipping cost) which
+    would incorrectly pass the MAX_PRODUCT_PRICE filter. Taking the max picks
+    the actual product price instead.
+    """
     prices = []
     for m in _PRICE_RE.finditer(text):
         try:
@@ -189,7 +195,7 @@ def _min_price_in_text(text: str) -> float:
                 prices.append(val)
         except ValueError:
             pass
-    return min(prices) if prices else 0.0
+    return max(prices) if prices else 0.0
 
 
 def _is_blocked(raw: dict) -> bool:
@@ -827,16 +833,19 @@ class FBAdsScraper:
 
                     if not key or key in self._seen_keys:
                         continue
-                    if _is_blocked(raw):
-                        self._seen_keys.add(key)
-                        continue
-                    self._seen_keys.add(key)
-                    # For non-Apify sources, convert now
+                    # Run blocklist on the standardized ad dict — Apify raws use
+                    # different field names (snapshot.body.text vs page_name), so
+                    # calling _is_blocked(raw) silently misses everything in Apify mode.
+                    # For Apify we already have `ad`; for other sources convert first.
                     if not _apify_client:
                         if _api_client:
                             ad = _api_ad_to_standard(raw, keyword)
                         else:
                             ad = _to_standard_ad(raw, keyword)
+                    if _is_blocked(ad):
+                        self._seen_keys.add(key)
+                        continue
+                    self._seen_keys.add(key)
                     page_id = ad.get("page_id", "")
                     if page_id and page_id != "unknown":
                         self._page_ads[page_id].append(ad)
@@ -956,7 +965,7 @@ class FBAdsScraper:
                     _clear_control()
                     logger.info("⏸  Scan paused — saving state. Press Continue to resume.")
                     save_state(self.state_file, self._snapshot_state(queue))
-                    # Wait in a tight loop until resume or stop
+                    _stopped_while_paused = False
                     while True:
                         _time.sleep(1)
                         cmd2 = _read_control()
@@ -967,10 +976,11 @@ class FBAdsScraper:
                         if cmd2 == "stop":
                             _clear_control()
                             logger.info("⏹  Stopped while paused — exporting results.")
-                            break  # breaks inner while; outer while exits next iteration
-                    else:
-                        continue  # keep scanning
-                    break  # stop was received while paused — exit Phase 1
+                            _stopped_while_paused = True
+                            break
+                    if _stopped_while_paused:
+                        break  # exit Phase 1 outer loop
+                    # else: resume — fall through to next keyword
 
                 if ctrl == "stop":
                     _clear_control()
@@ -1081,14 +1091,14 @@ class FBAdsScraper:
 
             all_real_urls: set[str] = set()
             for pid, _ads in self._page_ads.items():
-                # Count recent active ad versions for this page
-                recent_versions = sum(
-                    a.get("_ad_versions", 1)
-                    for a in _ads
-                    if _within_days(a, self.days)
+                # Count distinct recent creatives for this page.
+                # _ad_versions == collation_count in Apify mode (can be 300+ for 1 creative),
+                # so sum() would trigger for every store with even one viral ad. Use len().
+                recent_count = sum(
+                    1 for a in _ads if _within_days(a, self.days)
                 )
-                if recent_versions <= _SHOPIFY_AD_THRESHOLD:
-                    continue  # too few recent ads — skip Shopify check entirely
+                if recent_count <= _SHOPIFY_AD_THRESHOLD:
+                    continue  # too few recent creatives — skip Shopify check entirely
                 for _ad in _ads:
                     cta = _ad.get("_cta_url", "")
                     if cta:
@@ -1188,7 +1198,7 @@ class FBAdsScraper:
                 if niche_key:
                     terms = NICHE_TERMS[niche_key]
                     all_text = (page_name + " " + " ".join(
-                        b for a in ads[:5]
+                        b for a in ads[:30]
                         for b in (a.get("ad_creative_bodies") or [])
                     )).lower()
                     if not any(t in all_text for t in terms):
@@ -1204,10 +1214,13 @@ class FBAdsScraper:
             # large commercial brands or media buyers, not dropshipping stores.
             # (Validated workflow threshold: 250)
             if self.max_total_ads > 0:
-                page_total_versions = sum(a.get("_ad_versions", 1) for a in ads)
-                if page_total_versions > self.max_total_ads:
+                # Use count of distinct creatives, not sum of collation_count/ad_versions.
+                # In Apify mode _ad_versions == collation_count (can be 300+ for one creative),
+                # so sum() would incorrectly filter small stores with a single viral creative.
+                page_total_creatives = len(ads)
+                if page_total_creatives > self.max_total_ads:
                     logger.debug(
-                        f"  SKIP {page_id}: {page_total_versions} total ad versions "
+                        f"  SKIP {page_id}: {page_total_creatives} distinct creatives "
                         f"> max {self.max_total_ads} (likely large brand)"
                     )
                     stats["too_many_ads"] = stats.get("too_many_ads", 0) + 1
@@ -1290,9 +1303,11 @@ class FBAdsScraper:
                     # Not in cache (shouldn't happen often) — check inline
                     is_shopify, shopify_reason = is_shopify_store(store_url)
 
-                # Step 2: browser-based fallback — visit the actual store URL
+                # Step 2: browser-based fallback — only when HTTP check hit a network
+                # error (redirect chain, bot wall, etc). Don't re-visit confirmed stores
+                # or confirmed non-Shopify — that wastes browser time on every cluster.
                 shopify_via_browser = False
-                if browser and cta_url and not is_shopify:
+                if browser and cta_url and not is_shopify and "request error" in shopify_reason:
                     is_shopify, shopify_reason = browser.check_shopify_via_browser(cta_url)
                     shopify_via_browser = is_shopify
                 elif is_shopify:
@@ -1332,8 +1347,10 @@ class FBAdsScraper:
                 # ── New signals attached after construction ──────────────────────────
                 # Saturation: max pages seen per keyword that matched this page
                 matched_kws = self._page_keywords.get(page_id, set())
+                # _keyword_page_density counts all pages including this winner itself,
+                # so subtract 1 to get the number of *other* pages (true competitors).
                 w.saturation_count = max(
-                    (self._keyword_page_density.get(kw, 0) for kw in matched_kws),
+                    (max(0, self._keyword_page_density.get(kw, 0) - 1) for kw in matched_kws),
                     default=0,
                 )
                 # Page age: days since the oldest known ad (proxy for how new the page is)
