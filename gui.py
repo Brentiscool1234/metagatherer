@@ -867,9 +867,12 @@ class App(tk.Tk):
                     break
                 self._classify_and_append(line)
                 self._parse_stats_from_line(line)
-                m = _re.search(r"(\d+)\s+winner", line.lower())
+                # Match "Winners (≥6.0): 3" or "3 winners (≥6.0)" but NOT
+                # "2587   Winners" in the banner's "Pages evaluated" column.
+                m = _re.search(r"winners.*?:\s*(\d+)|(\d+)\s+winners?\s+\(", line.lower())
                 if m:
-                    winners_found = max(winners_found, int(m.group(1)))
+                    val = int(m.group(1) or m.group(2))
+                    winners_found = max(winners_found, val)
             proc.wait()
             code = proc.returncode
             if code == 0:

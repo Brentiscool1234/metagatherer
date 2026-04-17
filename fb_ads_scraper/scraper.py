@@ -454,6 +454,11 @@ def _api_ad_to_standard(api_ad: dict, keyword: str) -> dict:
 
 
 def _within_days(ad: dict, days: int) -> bool:
+    # Apify sets _is_active explicitly. A currently-running ad is always
+    # "recent" regardless of when it started — long-running ads are the
+    # BEST signals. Only apply the date window to inactive/unconfirmed ads.
+    if ad.get("_is_active") is True:
+        return True
     start = ad.get("_start_date")
     if not start:
         return True
@@ -1432,6 +1437,7 @@ class FBAdsScraper:
             f"Filter stats — total:{stats['total']} blocked:{stats['blocked']} "
             f"junk:{stats['junk']} niche_miss:{stats['niche_miss']} "
             f"follower_range:{stats['follower_range']} "
+            f"no_recent:{stats['no_recent']} "
             f"low_active_ratio:{stats.get('low_active_ratio', 0)} "
             f"too_many_ads:{stats.get('too_many_ads', 0)} "
             f"low_ads:{stats['low_ads']} "
