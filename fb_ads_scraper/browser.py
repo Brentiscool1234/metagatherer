@@ -706,6 +706,15 @@ class AdsLibraryBrowser:
                     page_name_from_dom = ""
                 search_name = page_name_from_dom or page_id
                 follower_count = self.get_followers_from_autocomplete(search_name)
+                # get_followers_from_autocomplete navigates to ADS_LIBRARY_BASE —
+                # return to this page's URL so the ad collection loop runs correctly.
+                try:
+                    self._driver.get(url)
+                    time.sleep(PAGE_LOAD_WAIT)
+                    self._dismiss_dialogs()
+                    self._wait_for_ads(timeout=10)
+                except Exception:
+                    pass
 
             # Scroll to collect all ads on this page
             no_new = 0
