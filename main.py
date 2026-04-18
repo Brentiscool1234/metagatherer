@@ -215,7 +215,7 @@ def main(
         _EXTEND_BY        = max(50, _UNTIL_WINNER_CAP // 10)
         _extra_kws = list(keywords) if keywords else None
 
-        all_products = scraper.run(extra_keywords=_extra_kws)
+        all_products = scraper.run(extra_keywords=_extra_kws, stop_on_winner=until_winner)
 
         if until_winner:
             from fb_ads_scraper.analysis import extract_new_keywords
@@ -246,7 +246,7 @@ def main(
                     f"Extending to {scraper.max_keywords} with "
                     f"{len(_new_kws)} new keywords — continuing...[/cyan]"
                 )
-                all_products = scraper.run(extra_keywords=_new_kws)
+                all_products = scraper.run(extra_keywords=_new_kws, stop_on_winner=True)
 
         tiktok_keywords = scraper._searched_keywords
 

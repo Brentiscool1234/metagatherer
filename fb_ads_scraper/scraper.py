@@ -640,7 +640,8 @@ class FBAdsScraper:
             "keyword_page_density": self._keyword_page_density,
         }
 
-    def run(self, extra_keywords: list[str] = None, discord_webhook: str = "") -> list[WinningProduct]:
+    def run(self, extra_keywords: list[str] = None, discord_webhook: str = "",
+            stop_on_winner: bool = False) -> list[WinningProduct]:
         # Generic seeds that reliably return results from FB Ads Library.
         # Always included as a safety net so Phase 1 collects something even
         # if niche-specific terms return 0 ads.
@@ -728,6 +729,18 @@ class FBAdsScraper:
                     logger.warning(f"FB API init failed: {e} — falling back to browser")
                     _api_client = None
 
+        # Load Shopify disk cache early so quick winner checks during Phase 1
+        # can use cached results without waiting for the full HTTP pre-check.
+        _SHOPIFY_CACHE_FILE = "shopify_url_cache.json"
+        _disk_cache: dict[str, tuple[bool, str]] = {}
+        try:
+            import json as _json
+            if os.path.exists(_SHOPIFY_CACHE_FILE):
+                _raw = _json.load(open(_SHOPIFY_CACHE_FILE))
+                _disk_cache = {k: tuple(v) for k, v in _raw.items()}
+        except Exception:
+            pass
+
         browser = AdsLibraryBrowser(countries=self.countries, headless=self.headless)
         browser.start()
 
@@ -793,6 +806,10 @@ class FBAdsScraper:
             # so calling every 3rd keyword uses practically the same data).
             _AI_EXPAND_EVERY = 3
             _ai_expand_counter = 0
+
+            _CHECK_WINNER_EVERY = 10  # quick scoring pass every N keywords
+            _winner_check_counter = 0
+            _found_winner_early = False
 
             while queue and total < self.max_keywords:
                 keyword, depth = queue.popleft()
@@ -960,6 +977,22 @@ class FBAdsScraper:
                                 f"  Phrase expansion: {phrase_kws}"
                             )
 
+                # ── Periodic winner check (until-winner mode) ─────────────
+                if stop_on_winner:
+                    _winner_check_counter += 1
+                    if _winner_check_counter >= _CHECK_WINNER_EVERY:
+                        _winner_check_counter = 0
+                        from .scoring import WINNER_THRESHOLD as _WT
+                        _quick = self._evaluate_pages(browser=None, shopify_cache=_disk_cache)
+                        _quick_winners = [r for r in _quick if getattr(r, "score", 0) >= _WT]
+                        if _quick_winners:
+                            logger.info(
+                                f"  Winner found after {total} keywords "
+                                f"({_quick_winners[0].page_name}) — stopping keyword sweep early."
+                            )
+                            _found_winner_early = True
+                            break
+
                 # Save after every keyword so interruptions are resumable
                 save_state(self.state_file, self._snapshot_state(queue))
 
@@ -1085,15 +1118,14 @@ class FBAdsScraper:
 
         # Pre-check Shopify only for pages that have >12 active ads within the
         # lookback window — no point hitting HTTP for pages that will be filtered out.
+        # _disk_cache and _SHOPIFY_CACHE_FILE were already loaded before Phase 1.
         _SHOPIFY_AD_THRESHOLD = 12
-        _SHOPIFY_CACHE_FILE = "shopify_url_cache.json"
         shopify_cache: dict[str, tuple[bool, str]] = {}
         try:
             from .shopify import batch_check_shopify, decode_facebook_redirect as _dfr
             import json as _json
 
-            # Load URLs checked in previous runs so we don't re-hit them
-            _disk_cache: dict[str, tuple[bool, str]] = {}
+            # Reload disk cache in case new entries were written during Phase 1 quick checks
             try:
                 if os.path.exists(_SHOPIFY_CACHE_FILE):
                     _raw = _json.load(open(_SHOPIFY_CACHE_FILE))
