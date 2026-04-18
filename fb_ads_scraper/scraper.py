@@ -901,7 +901,9 @@ class FBAdsScraper:
                             f"— visiting now for full count"
                         )
                         try:
-                            _fan, _page_ads_now = browser.get_page_ads(_hot_pid, max_ads=200)
+                            _fan, _page_ads_now = browser.get_page_ads(
+                                _hot_pid, max_ads=200,
+                                known_followers=self._page_followers.get(_hot_pid, 0))
                             if _fan > 0:
                                 self._page_followers[_hot_pid] = _fan
                             for _raw in (_page_ads_now or []):
@@ -1050,7 +1052,9 @@ class FBAdsScraper:
                 if fan_count > 0 and not (self.min_followers <= fan_count <= self.max_followers):
                     continue
 
-                page_follower_count, page_ads = browser.get_page_ads(pid, max_ads=200)
+                page_follower_count, page_ads = browser.get_page_ads(
+                    pid, max_ads=200,
+                    known_followers=self._page_followers.get(pid, 0))
                 if page_follower_count > 0:
                     self._page_followers[pid] = page_follower_count
                 if not page_ads:
@@ -1128,7 +1132,7 @@ class FBAdsScraper:
                 )
                 new_results = batch_check_shopify(uncached_urls)
                 shopify_cache.update(new_results)
-                confirmed = sum(1 for v in shopify_cache.values() if v[0])
+                confirmed = sum(1 for u in all_real_urls if shopify_cache.get(u, (False,))[0])
                 logger.info(f"  Shopify confirmed: {confirmed}/{len(all_real_urls)}")
 
                 # Persist newly checked results to disk

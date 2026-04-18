@@ -74,7 +74,7 @@ def parse_view_count(text: str) -> int:
 # ── JavaScript injected into TikTok search results page ──────────────────────
 # TikTok's class names are obfuscated and change frequently, so we rely on
 # structural signals (a[href*="/video/"], nearby text, @username links).
-_TIKTOK_SEARCH_JS = """
+_TIKTOK_SEARCH_JS = r"""
 var results = [];
 var seen = {};
 
@@ -133,7 +133,7 @@ return results;
 """
 
 # ── JavaScript to extract date + bio link from an individual video page ───────
-_TIKTOK_VIDEO_JS = """
+_TIKTOK_VIDEO_JS = r"""
 var result = {date: '', bio_url: ''};
 
 // Upload date — TikTok embeds it in a <time> tag or as data

@@ -599,7 +599,7 @@ class AdsLibraryBrowser:
         logger.info(f"  Scraped {len(all_ads)} ads for '{keyword}'")
         return all_ads
 
-    def get_page_ads(self, page_id: str, max_ads: int = 200) -> tuple[int, list[dict]]:
+    def get_page_ads(self, page_id: str, max_ads: int = 200, known_followers: int = 0) -> tuple[int, list[dict]]:
         country = self.countries[0] if self.countries else "US"
         if page_id.isdigit():
             url = ADS_LIBRARY_BASE + "?" + urlencode({
@@ -620,7 +620,9 @@ class AdsLibraryBrowser:
 
         all_ads: list[dict] = []
         seen_keys: set[str] = set()
-        follower_count = 0
+        # Use Phase-1 follower count (Apify/API) when available — avoids the
+        # autocomplete fallback which navigates away and triggers "No ads loaded" warnings.
+        follower_count = known_followers
 
         try:
             self._driver.get(url)
@@ -628,7 +630,8 @@ class AdsLibraryBrowser:
             self._dismiss_dialogs()
             self._wait_for_ads(timeout=10)
 
-            # Extract follower count — retry up to 3 times (panel often renders late)
+            # Extract follower count — skip if already known from Phase 1 data.
+            # Retry up to 3 times (panel often renders late)
             _FOLLOWER_JS = r"""
                 // Strategy 1: scan specific advertiser-panel elements first
                 // (the <aside> / left-panel in the page-specific Ads Library view)
@@ -685,8 +688,8 @@ class AdsLibraryBrowser:
 
             # Fallback: type the page name into the Ads Library search box and
             # read the follower count from the autocomplete "Advertisers" panel.
-            # This is the most reliable source — it always appears in the dropdown.
-            # We grab the page name from the already-loaded page DOM first.
+            # Only trigger this if follower count is still unknown — if known_followers
+            # was passed by the caller (from Phase-1 Apify/API data), skip entirely.
             if follower_count == 0:
                 try:
                     page_name_from_dom = self._driver.execute_script(r"""
