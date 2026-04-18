@@ -755,6 +755,22 @@ class AdsLibraryBrowser:
         except WebDriverException as e:
             logger.debug(f"  get_page_ads error {page_id}: {str(e)[:100]}")
 
+        # Last resort: extract follower count from the ad cards themselves.
+        # Each card returned by _EXTRACT_JS has a follower_text field scraped
+        # from the card's "54K followers" label. Use the first non-zero one.
+        if follower_count == 0 and all_ads:
+            for _ad in all_ads:
+                _ft = _ad.get("follower_text", "")
+                if _ft:
+                    _fc = parse_follower_count(_ft)
+                    if _fc:
+                        follower_count = _fc
+                        logger.debug(
+                            f"  Followers {page_id}: from ad card "
+                            f"{_ft!r} → {follower_count}"
+                        )
+                        break
+
         return follower_count, all_ads
 
     def check_shopify_via_browser(self, url: str) -> tuple[bool, str]:

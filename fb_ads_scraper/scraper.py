@@ -885,14 +885,19 @@ class FBAdsScraper:
                         pname = ad.get("page_name", "")
                         if pname:
                             all_page_names_for_ai.append(pname)
-                        # Propagate follower count from Apify data so Phase 2
+                        # Propagate follower count from Phase-1 ad card data so Phase 2
                         # pre-check and _evaluate_pages have a real value even
                         # before a browser visit.  Always take the highest seen —
                         # different ads from the same page can report different counts.
                         if _apify_client:
                             pf = ad.get("page_followers", 0) or 0
-                            if pf > self._page_followers.get(page_id, 0):
-                                self._page_followers[page_id] = pf
+                        else:
+                            # Browser mode: follower_text is extracted by _EXTRACT_JS
+                            # from each ad card in the search results and stored as
+                            # _follower_count in the standard ad dict.
+                            pf = ad.get("_follower_count", 0) or 0
+                        if pf > self._page_followers.get(page_id, 0):
+                            self._page_followers[page_id] = pf
 
                 # Update saturation density for this keyword
                 self._keyword_page_density[keyword] = len(_pages_this_keyword)
