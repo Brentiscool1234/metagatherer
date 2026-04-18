@@ -110,7 +110,9 @@ def _setup_logging(verbose: bool):
 @click.option("--tiktok-login", is_flag=True, default=False,
               help="Open a browser to log in to TikTok and save session cookies, then exit.")
 @click.option("--until-winner", is_flag=True, default=False,
-              help="Keep searching (up to 150 total keywords) until at least one winner is found.")
+              help="Keep searching until at least one winner is found (see --keyword-cap).")
+@click.option("--keyword-cap", default=500, show_default=True, type=int,
+              help="Max total keywords when --until-winner is active.")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
 @click.option("--discord-webhook", default=None, envvar="DISCORD_WEBHOOK_URL",
               help="Discord webhook URL for winner notifications (or set DISCORD_WEBHOOK_URL in .env).")
@@ -120,7 +122,7 @@ def main(
     niche, keywords, max_keywords, keyword_depth, max_ads_per_keyword,
     video_only, require_shop_now, headless, output, no_csv,
     facebook, tiktok, tiktok_login, state_file, reset, verbose, until_winner,
-    discord_webhook,
+    keyword_cap, discord_webhook,
 ):
     """MetaGatherer: Find winning ecommerce products in the Facebook Ads Library."""
     _setup_logging(verbose)
@@ -209,8 +211,8 @@ def main(
             reset=reset,
             niche=niche or None,
         )
-        _UNTIL_WINNER_CAP = 150   # hard cap on total keywords when --until-winner is set
-        _EXTEND_BY        = 30    # extra keywords per extension round
+        _UNTIL_WINNER_CAP = max(keyword_cap, max_keywords)
+        _EXTEND_BY        = max(50, _UNTIL_WINNER_CAP // 10)
         _extra_kws = list(keywords) if keywords else None
 
         all_products = scraper.run(extra_keywords=_extra_kws)

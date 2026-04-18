@@ -258,7 +258,22 @@ class App(tk.Tk):
         # ── Control buttons ───────────────────────────────────────────────────
         self._section(left, "Controls")
 
-        self._check(left, "Keep scanning until winner", self.v_until_winner)
+        # "Until winner" row with keyword cap spinner
+        until_row = tk.Frame(left, bg=BG)
+        until_row.pack(fill="x", pady=1)
+        tk.Checkbutton(until_row, text="Keep scanning until winner",
+                       variable=self.v_until_winner, font=FONT,
+                       bg=BG, fg=FG, activebackground=BG, activeforeground=FG,
+                       selectcolor=BG3, cursor="hand2").pack(side="left")
+        tk.Label(until_row, text="cap:", font=FONT, bg=BG, fg=FG_DIM).pack(side="left", padx=(6, 2))
+        self.v_keyword_cap = tk.IntVar(value=500)
+        tk.Spinbox(until_row, from_=50, to=5000, increment=50,
+                   textvariable=self.v_keyword_cap,
+                   font=FONT, bg=BG2, fg=FG, buttonbackground=BG3,
+                   insertbackground=FG, bd=0,
+                   highlightbackground=BG3, highlightthickness=1,
+                   width=5).pack(side="left")
+        tk.Label(until_row, text="kw", font=FONT, bg=BG, fg=FG_DIM).pack(side="left", padx=(2, 0))
 
         # Overnight mode — chain queued niches until N winners found
         overnight_row = tk.Frame(left, bg=BG)
@@ -859,7 +874,9 @@ class App(tk.Tk):
         if self.v_headless.get():     cmd.append("--headless")
         if self.v_reset.get():        cmd.append("--reset")
         if self.v_no_csv.get():       cmd.append("--no-csv")
-        if self.v_until_winner.get(): cmd.append("--until-winner")
+        if self.v_until_winner.get():
+            cmd.append("--until-winner")
+            cmd += ["--keyword-cap", str(self.v_keyword_cap.get())]
         wh = self.v_discord_wh.get().strip()
         if wh:
             cmd += ["--discord-webhook", wh]
