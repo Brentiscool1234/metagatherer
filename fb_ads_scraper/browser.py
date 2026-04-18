@@ -531,7 +531,7 @@ class AdsLibraryBrowser:
     def search_keyword(self, keyword: str, max_ads: int = 120) -> list[dict]:
         country = self.countries[0] if self.countries else "US"
         url = ADS_LIBRARY_BASE + "?" + urlencode({
-            "active_status": "active",
+            "active_status": "all",   # match Apify — see active + recently-stopped ads
             "ad_type": "all",
             "country": country,
             "q": keyword,
@@ -555,7 +555,9 @@ class AdsLibraryBrowser:
             logger.debug(f"  Page title: {title}")
 
             no_new_rounds = 0
-            max_scrolls = max(8, max_ads // 15)
+            # Facebook's public UI caps at ~150 results total regardless of scrolling.
+            # Use more scrolls + smaller denominator to squeeze out every available card.
+            max_scrolls = max(15, max_ads // 10)
 
             for scroll_n in range(max_scrolls):
                 try:
@@ -603,7 +605,7 @@ class AdsLibraryBrowser:
         country = self.countries[0] if self.countries else "US"
         if page_id.isdigit():
             url = ADS_LIBRARY_BASE + "?" + urlencode({
-                "active_status": "active",
+                "active_status": "all",   # match Apify — see full ad history
                 "ad_type": "all",
                 "country": country,
                 "search_type": "page",
@@ -611,7 +613,7 @@ class AdsLibraryBrowser:
             })
         else:
             url = ADS_LIBRARY_BASE + "?" + urlencode({
-                "active_status": "active",
+                "active_status": "all",
                 "ad_type": "all",
                 "country": country,
                 "q": page_id,
