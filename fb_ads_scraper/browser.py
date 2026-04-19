@@ -530,73 +530,93 @@ class AdsLibraryBrowser:
 
     def search_keyword(self, keyword: str, max_ads: int = 120) -> list[dict]:
         country = self.countries[0] if self.countries else "US"
-        url = ADS_LIBRARY_BASE + "?" + urlencode({
-            "active_status": "all",   # match Apify — see active + recently-stopped ads
-            "ad_type": "all",
-            "country": country,
-            "q": keyword,
-            "search_type": "keyword_unordered",
-            "media_type": "all",
-        })
 
         all_ads: list[dict] = []
         seen_keys: set[str] = set()
 
-        try:
-            self._driver.get(url)
-            time.sleep(PAGE_LOAD_WAIT)
-            self._dismiss_dialogs()
+        # Two-pass strategy: search VIDEO then IMAGE separately.
+        # Facebook's public Ads Library caps results at ~150 per search request.
+        # Splitting by media_type gives each pass its own ~150-slot quota, so we
+        # can collect up to ~300 total per keyword instead of ~150.
+        #
+        # Sort by total_impressions desc: within each 150-cap window we get the
+        # highest-performing ads first — not random order.  This means even when
+        # we can't collect everything, what we DO collect is the most valuable.
+        #
+        # active_status=active: only currently running ads are returned, so every
+        # collected ad is a live product (no need to filter by is_active later).
+        # is_targeted_country=false: include ads reaching the country but not
+        # specifically targeted there — broadens the result pool.
+        for media_type in ("video", "image"):
+            if len(all_ads) >= max_ads:
+                break
 
-            if not self._wait_for_ads(timeout=18):
-                logger.warning(f"  Skipping '{keyword}' — page never loaded ads")
-                return []
+            url = (
+                ADS_LIBRARY_BASE + "?" +
+                urlencode({
+                    "active_status": "active",
+                    "ad_type": "all",
+                    "country": country,
+                    "q": keyword,
+                    "search_type": "keyword_unordered",
+                    "media_type": media_type,
+                    "is_targeted_country": "false",
+                }) +
+                "&sort_data%5Bdirection%5D=desc&sort_data%5Bmode%5D=total_impressions"
+            )
 
-            title = self._driver.title
-            logger.debug(f"  Page title: {title}")
+            try:
+                self._driver.get(url)
+                time.sleep(PAGE_LOAD_WAIT)
+                self._dismiss_dialogs()
 
-            no_new_rounds = 0
-            # Facebook's public UI caps at ~150 results total regardless of scrolling.
-            # Use more scrolls + smaller denominator to squeeze out every available card.
-            max_scrolls = max(15, max_ads // 10)
-
-            for scroll_n in range(max_scrolls):
-                try:
-                    raw = self._driver.execute_script(_EXTRACT_JS) or []
-                except WebDriverException as js_err:
-                    logger.debug(f"  JS error scroll {scroll_n}: {str(js_err)[:80]}")
-                    self._driver.execute_script("window.scrollBy(0, window.innerHeight * 2.5);")
-                    time.sleep(SCROLL_DELAY)
+                if not self._wait_for_ads(timeout=18):
+                    logger.debug(f"  '{keyword}' ({media_type}): no results")
                     continue
 
-                for item in raw:
-                    if "_error" in item:
-                        logger.warning(f"  JS: {item['_error']}")
+                no_new_rounds = 0
+                # Allow enough scrolls to exhaust each media-type pass.
+                max_scrolls = max(15, max_ads // 10)
 
-                added = 0
-                for ad in raw:
-                    if "_error" in ad:
+                for scroll_n in range(max_scrolls):
+                    try:
+                        raw = self._driver.execute_script(_EXTRACT_JS) or []
+                    except WebDriverException as js_err:
+                        logger.debug(f"  JS error scroll {scroll_n}: {str(js_err)[:80]}")
+                        self._driver.execute_script("window.scrollBy(0, window.innerHeight * 2.5);")
+                        time.sleep(SCROLL_DELAY)
                         continue
-                    k = ad.get("_key", "")
-                    if k and k not in seen_keys:
-                        seen_keys.add(k)
-                        all_ads.append(ad)
-                        added += 1
 
-                if added == 0:
-                    no_new_rounds += 1
-                    if no_new_rounds >= 2:   # was 3
+                    for item in raw:
+                        if "_error" in item:
+                            logger.warning(f"  JS: {item['_error']}")
+
+                    added = 0
+                    for ad in raw:
+                        if "_error" in ad:
+                            continue
+                        k = ad.get("_key", "")
+                        if k and k not in seen_keys:
+                            seen_keys.add(k)
+                            all_ads.append(ad)
+                            added += 1
+
+                    if added == 0:
+                        no_new_rounds += 1
+                        if no_new_rounds >= 2:
+                            break
+                    else:
+                        no_new_rounds = 0
+
+                    if len(all_ads) >= max_ads:
                         break
-                else:
-                    no_new_rounds = 0
 
-                if len(all_ads) >= max_ads:
-                    break
+                    self._driver.execute_script("window.scrollBy(0, window.innerHeight * 2.5);")
+                    time.sleep(SCROLL_DELAY)
 
-                self._driver.execute_script("window.scrollBy(0, window.innerHeight * 2.5);")
-                time.sleep(SCROLL_DELAY)
-
-        except WebDriverException as e:
-            logger.warning(f"  Browser error '{keyword}': {e.msg[:200] if hasattr(e,'msg') else str(e)[:200]}")
+            except WebDriverException as e:
+                logger.warning(f"  Browser error '{keyword}' ({media_type}): "
+                               f"{e.msg[:200] if hasattr(e,'msg') else str(e)[:200]}")
 
         logger.info(f"  Scraped {len(all_ads)} ads for '{keyword}'")
         return all_ads
