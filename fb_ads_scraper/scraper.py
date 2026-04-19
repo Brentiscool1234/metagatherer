@@ -149,6 +149,16 @@ _NICHE_ALIASES: dict[str, str] = {
     "gardening": "outdoor", "hunting": "outdoor", "fishing": "outdoor",
     # car
     "vehicle": "car", "auto": "car", "truck": "car", "automotive": "car",
+    # wellness
+    "health": "wellness", "pain": "wellness", "relief": "wellness",
+    "sleep": "wellness", "therapy": "wellness", "recovery": "wellness",
+    "inflammation": "wellness", "joint": "wellness", "posture": "wellness",
+    # productivity
+    "planner": "productivity", "journal": "productivity", "habit": "productivity",
+    "organize": "productivity", "scheduler": "productivity", "office": "productivity",
+    # financial
+    "budget": "financial", "money": "financial", "saving": "financial",
+    "finance": "financial", "cash": "financial", "expense": "financial",
 }
 
 
@@ -313,6 +323,25 @@ NICHE_SEED_MAP: dict[str, list[str]] = {
         "car vacuum cordless", "windshield sun shade", "blind spot mirror",
         "tire pressure gauge digital",
     ],
+    # Q1 self-improvement niches (fitness ≠ wellness — wellness = pain/sleep/recovery)
+    "wellness": [
+        "back pain relief device", "heating pad electric", "neck traction device",
+        "knee pain brace support", "red light therapy wand", "infrared heating wrap",
+        "sleep aid eye mask", "pain relief patch wearable", "posture corrector back",
+        "foot massager electric",
+    ],
+    "productivity": [
+        "daily planner notebook", "habit tracker journal", "desk organizer set",
+        "weekly whiteboard planner", "goal setting journal", "pomodoro timer cube",
+        "vision board kit", "sticky note pad large", "password keeper book",
+        "gratitude journal daily",
+    ],
+    "financial": [
+        "budget planner book", "cash envelope system wallet", "savings challenge tracker",
+        "bill organizer accordion", "debt payoff planner", "expense tracker notebook",
+        "money saving jar adult", "financial planner undated", "coin counting machine",
+        "cash management binder",
+    ],
 }
 
 # Pages seen this many times in Phase 1 get a full verification visit.
@@ -331,7 +360,10 @@ NICHE_TERMS: dict[str, set[str]] = {
     "jewelry":  {"jewelry","necklace","bracelet","ring","earring","pendant","charm","gold","silver","crystal","pearl","diamond","bead","anklet","choker","locket"},
     "baby":     {"baby","infant","toddler","newborn","diaper","stroller","crib","nursery","teething","pacifier","breastfeed","bottle","monitor","carrier","swaddle"},
     "outdoor":  {"outdoor","camping","hiking","trail","backpack","tent","survival","waterproof","solar","headlamp","fire","fishing","hunting","kayak","bike","cycle"},
-    "car":      {"car","vehicle","auto","truck","suv","dashboard","seat","trunk","tyre","tire","windshield","mirror","park","drive","road","motor"},
+    "car":          {"car","vehicle","auto","truck","suv","dashboard","seat","trunk","tyre","tire","windshield","mirror","park","drive","road","motor"},
+    "wellness":     {"pain","relief","back","neck","knee","shoulder","hip","joint","sleep","relax","therapy","infrared","heating","heat","massage","posture","brace","pillow","recovery","inflammation","muscle","sore","ache","chronic","lumbar","sciatica","arthritis","tension","knot"},
+    "productivity": {"planner","journal","habit","tracker","schedule","goal","focus","organiz","calendar","routine","daily","weekly","sticky","notes","desk","workspace","productivity","pomodoro","vision board","checklist","agenda","to-do","todo"},
+    "financial":    {"budget","money","saving","cash","expense","bill","debt","finance","planner","envelope","wallet","spending","income","invest","frugal","financial","piggy","coin","tracker","ledger"},
 }
 
 

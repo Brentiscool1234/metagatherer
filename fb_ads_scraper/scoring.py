@@ -187,15 +187,23 @@ def score_product(w) -> tuple[float, dict]:
 
     total = sum(b.values())
 
-    # ── 8. Page age bonus (using page_age_days from oldest known ad) ──────────
+    # ── 8. Page age bonus/penalty (using page_age_days from oldest known ad) ─────
+    # < 30d  → very new, rare find (+0.5)
+    # < 90d  → relatively new (+0.25)
+    # 90–180d → market is filling up, neutral (0)
+    # > 180d  → market is likely mature and crowded; copycatters should skip (-0.5)
+    # (Validated from Andrew's framework: "recent AND scaling" — old stores have
+    #  already saturated their slice of the market even if ads are still running.)
     page_age_days = getattr(w, "page_age_days", None)
     if page_age_days is not None:
         if page_age_days < 30:
-            b["page_age_bonus"] = 0.5   # very new — rare find
+            b["page_age_bonus"] = 0.5
         elif page_age_days < 90:
-            b["page_age_bonus"] = 0.25  # relatively new
+            b["page_age_bonus"] = 0.25
+        elif page_age_days < 180:
+            b["page_age_bonus"] = 0.0
         else:
-            b["page_age_bonus"] = 0.0   # established — neutral
+            b["page_age_bonus"] = -0.5  # too old — market likely saturated
         total += b["page_age_bonus"]
 
     # ── 9. Ad freshness rate bonus ─────────────────────────────────────────────
