@@ -575,6 +575,7 @@ class WinningProduct:
             "recent_ad_count": getattr(self, "recent_ad_count", 0),
             "freshness_rate": getattr(self, "freshness_rate", ""),
             "market_stage": getattr(self, "market_stage", ""),
+            "detected_price_usd": getattr(self, "detected_price", 0) or "",
             # ── Opportunity & risk ───────────────────────────────────────────
             "opportunity_tier": getattr(self, "opportunity_tier", ""),
             "opportunity_label": getattr(self, "opportunity_label", ""),
@@ -1276,7 +1277,14 @@ class FBAdsScraper:
             # Niche relevance filter — fast keyword check, no API calls needed
             if self.niche:
                 niche_lower = self.niche.lower()
+                # Direct key match: "wellness" appears in "health and wellness"
                 niche_key = next((k for k in NICHE_TERMS if k in niche_lower), None)
+                # Alias fallback: "health" → "wellness" via _NICHE_ALIASES
+                if niche_key is None:
+                    words = niche_lower.split()
+                    alias = next((_NICHE_ALIASES[w] for w in words if w in _NICHE_ALIASES), None)
+                    if alias and alias in NICHE_TERMS:
+                        niche_key = alias
                 if niche_key:
                     terms = NICHE_TERMS[niche_key]
                     all_text = (page_name + " " + " ".join(
@@ -1403,7 +1411,9 @@ class FBAdsScraper:
                 )
                 sample = cluster[0]
                 bodies = sample.get("ad_creative_bodies") or []
-                page_name_final = sample.get("page_name", page_id)
+                # Use the validated page_name (junk-filtered above), fall back to
+                # sample only if it somehow wasn't set (shouldn't happen).
+                page_name_final = page_name or sample.get("page_name", page_id)
 
                 w = WinningProduct(
                     page_id=page_id,
@@ -1412,6 +1422,7 @@ class FBAdsScraper:
                     page_url=page_url,
                     store_url=store_url,
                     ad_count=total_versions,
+                    detected_price=min_price,
                     total_page_ads=len(ads),
                     has_shop_now=shop_now > 0,
                     is_shopify=is_shopify,
@@ -1444,11 +1455,14 @@ class FBAdsScraper:
                         w.page_age_days = None
                 else:
                     w.page_age_days = None
-                # Freshness: what fraction of total ad versions are within the lookback window
-                recent_versions = sum(a.get("_ad_versions", 1) for a in recent)
-                total_versions_all = sum(a.get("_ad_versions", 1) for a in ads)
-                w.recent_ad_count = recent_versions
-                w.freshness_rate = round(recent_versions / total_versions_all, 4) if total_versions_all > 0 else 0.0
+                # recent_ad_count: versions in THIS cluster (cluster ⊆ recent by construction)
+                # freshness_rate:  page-level signal — what fraction of the PAGE's total
+                #                  ad history is recent? Used by the scoring bonus to answer
+                #                  "is this page currently active?" not "is this cluster fresh?"
+                page_recent_versions = sum(a.get("_ad_versions", 1) for a in recent)
+                total_versions_all   = sum(a.get("_ad_versions", 1) for a in ads)
+                w.recent_ad_count = sum(a.get("_ad_versions", 1) for a in cluster)
+                w.freshness_rate = round(page_recent_versions / total_versions_all, 4) if total_versions_all > 0 else 0.0
 
                 # Market stage: classify by age + saturation
                 # too_early  < 3 days   — not enough data to validate

@@ -14,7 +14,11 @@ Criteria and max points:
   base max      10.0  (hard-capped after bonuses/penalties)
 
 Bonuses / penalties applied after the base score:
+  price_viab    +0.25 price $25–120 (viable Facebook margin)
+               -0.25  price $20–24 (borderline)
+               -0.5   price < $20  (too cheap for FB ad economics)
   page_age      +0.5  very new page (< 30 days) / +0.25 relatively new (< 90 days)
+               -0.5   old page (> 180 days) — market already saturated
   freshness     +0.5  most ads fresh (> 70%) / +0.25 mostly fresh (> 40%)
   competition   +0.25 moderate competitors (3–10) = proof of demand
                -0.75  saturated (> 10 pages)
@@ -187,7 +191,25 @@ def score_product(w) -> tuple[float, dict]:
 
     total = sum(b.values())
 
-    # ── 8. Page age bonus/penalty (using page_age_days from oldest known ad) ─────
+    # ── 8. Price viability (from detected_price in ad copy) ──────────────────────
+    # Andrew's rule: need $30-45 minimum sell price on Facebook to cover ad costs.
+    # < $20: product likely won't be profitable with Facebook advertising costs.
+    # $20-29: borderline / risky for FB (TikTok Shop can make it work, FB can't).
+    # $25-120: sweet spot — clear margin after 2-3x AliExpress markup + ad spend.
+    # No price detected: neutral (benefit of the doubt).
+    detected_price = getattr(w, "detected_price", 0) or 0
+    if detected_price > 0:
+        if 25 <= detected_price <= 120:
+            b["price_viability"] = 0.25
+        elif detected_price < 20:
+            b["price_viability"] = -0.5   # too cheap for FB ad economics
+        elif 20 <= detected_price < 25:
+            b["price_viability"] = -0.25  # borderline
+        else:
+            b["price_viability"] = 0.0   # high-ticket, neutral
+        total += b["price_viability"]
+
+    # ── 9. Page age bonus/penalty (using page_age_days from oldest known ad) ─────
     # < 30d  → very new, rare find (+0.5)
     # < 90d  → relatively new (+0.25)
     # 90–180d → market is filling up, neutral (0)
