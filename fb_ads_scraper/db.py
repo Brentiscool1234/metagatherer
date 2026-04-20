@@ -165,3 +165,20 @@ def load_winners_for_scan(scan_id: int, path: str = DB_FILE) -> list[dict]:
     except Exception as e:
         logger.debug(f"DB load_winners_for_scan failed: {e}")
         return []
+
+
+def load_seen_page_ids(path: str = DB_FILE) -> set[str]:
+    """
+    Return every page_id ever saved as a winner or near-miss.
+    Used to suppress already-surfaced products on future runs, even after --reset.
+    """
+    try:
+        conn = get_conn(path)
+        rows = conn.execute(
+            "SELECT DISTINCT page_id FROM winners WHERE page_id != ''"
+        ).fetchall()
+        conn.close()
+        return {r["page_id"] for r in rows}
+    except Exception as e:
+        logger.debug(f"DB load_seen_page_ids failed: {e}")
+        return set()

@@ -660,6 +660,17 @@ class FBAdsScraper:
                     f"Resuming saved state — {state_summary(saved)}"
                 )
 
+        # Always load previously seen page IDs from the DB — survives --reset.
+        # Prevents re-surfacing the same winners/near-misses across runs.
+        try:
+            from .db import load_seen_page_ids as _load_db_ids
+            _db_ids = _load_db_ids()
+            self._seen_winner_ids.update(_db_ids)
+            if _db_ids:
+                logger.debug(f"  DB dedup: suppressing {len(_db_ids)} previously seen page(s)")
+        except Exception:
+            pass
+
     def _snapshot_state(self, queue=None) -> dict:
         return {
             "searched_keywords": self._searched_keywords,
@@ -727,6 +738,14 @@ class FBAdsScraper:
 
         if extra_keywords:
             seeds = list(extra_keywords) + [s for s in seeds if s not in extra_keywords]
+
+        # Shuffle seed order so each fresh run explores a different branch first.
+        # extra_keywords (user-supplied) are kept at the front; only the tail shuffles.
+        import random as _random
+        _n_extra = len(extra_keywords) if extra_keywords else 0
+        _tail = seeds[_n_extra:]
+        _random.shuffle(_tail)
+        seeds = seeds[:_n_extra] + _tail
 
         # ── Fast-path detection (priority: Apify > FB API > browser) ────────────
         # Apify: set APIFY_API_KEY (and optionally APIFY_ACTOR_ID) in .env
