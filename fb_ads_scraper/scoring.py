@@ -20,6 +20,7 @@ Bonuses / penalties applied after the base score:
   page_age      +0.5  very new page (< 30 days) / +0.25 relatively new (< 90 days)
                -0.5   old page (> 180 days) — market already saturated
   freshness     +0.5  most ads fresh (> 70%) / +0.25 mostly fresh (> 40%)
+  revival       -0.5  30+ day dormant gap then recent relaunch = failed campaign revived
   competition   +0.25 moderate competitors (3–10) = proof of demand
                -0.75  saturated (> 10 pages)
                -1.5   very saturated (> 20 pages)
@@ -124,7 +125,7 @@ def score_product(w) -> tuple[float, dict]:
     # Measures whether the advertiser is actively scaling vs just launched.
     #
     # Modern broad/ASC/DCT note: advertisers often launch ALL creatives on the
-    # same day (single batch), then scale via budget bumps — NOT by adding new
+    # same day (single batch), then scale via budget jumps — NOT by adding new
     # creatives.  So a single-launch-date scenario with high collation_count is
     # normal and should NOT be penalised.
     #
@@ -137,7 +138,14 @@ def score_product(w) -> tuple[float, dict]:
     #     all same launch date AND launched <= 7d ago → fresh test    (0.3)
     #     all same launch date AND launched 7–30d ago → stable run   (0.5)
     #     (the ad_age criterion already rewards long-running campaigns)
+    #
+    # Revival guard: if there is a 30+ day dormant gap between launch clusters
+    # followed by a recent relaunch, the original campaign failed and the
+    # advertiser is trying to revive it.  This is a STRONG negative signal.
+    # We zero out expansion and apply a -0.5 revival penalty (stored separately
+    # so it appears in the breakdown and is subtracted from total later).
     ad_expansion_score = 0.0
+    _revival_penalty   = 0.0
     if w.ad_start_dates:
         try:
             dates = sorted(set(w.ad_start_dates))
@@ -145,9 +153,18 @@ def score_product(w) -> tuple[float, dict]:
             days_since_newest = (datetime.now(timezone.utc) - newest_dt).days
 
             if len(dates) >= 2:
-                oldest_dt    = datetime.strptime(dates[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
-                spread_days  = (newest_dt - oldest_dt).days
-                if spread_days >= 14 and days_since_newest <= 3:
+                oldest_dt   = datetime.strptime(dates[0], "%Y-%m-%d").replace(tzinfo=timezone.utc)
+                spread_days = (newest_dt - oldest_dt).days
+
+                # Find the largest dormant gap between consecutive launch dates
+                parsed = [datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=timezone.utc) for d in dates]
+                max_gap = max((parsed[i] - parsed[i - 1]).days for i in range(1, len(parsed)))
+
+                # Revival: 30+ day silence → recent relaunch of a failed campaign
+                if max_gap >= 30 and days_since_newest <= 14:
+                    _revival_penalty  = -0.5
+                    ad_expansion_score = 0.0
+                elif spread_days >= 14 and days_since_newest <= 3:
                     ad_expansion_score = 1.0
                 elif spread_days >= 7 and days_since_newest <= 7:
                     ad_expansion_score = 0.6
@@ -164,6 +181,8 @@ def score_product(w) -> tuple[float, dict]:
         except (ValueError, TypeError):
             ad_expansion_score = 0.0
     b["ad_expansion"] = ad_expansion_score
+    if _revival_penalty < 0:
+        b["revival_penalty"] = _revival_penalty
 
     # ── 4. Video ads (1.0 pt) ────────────────────────────────────────────────
     b["video_ads"] = 1.0 if w.is_video else 0.0
