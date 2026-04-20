@@ -211,15 +211,19 @@ class DropshippingExpert:
         if self._context:
             ctx_str = f"\nScan settings: {json.dumps(self._context)}"
 
+        # Show as many already-searched keywords as possible so Claude
+        # doesn't waste suggestions on terms the scraper already covered.
+        all_searched_str = ', '.join(sorted(already)[:80]) or 'none'
+
         prompt = (
             f"Live scan update:{ctx_str}\n"
-            f"- Keywords searched: {', '.join(recent_kws)}\n"
+            f"- Recent keywords searched: {', '.join(recent_kws)}\n"
             f"- Total ads collected: {total_ads}\n"
             f"- Qualifying products found so far: {products_found}\n"
             f"- Last keyword: \"{recent_keyword}\" → {recent_ads_found} ads\n"
-            f"- Already queued/searched (don't repeat): {', '.join(sorted(already)[:20]) or 'none'}\n\n"
+            f"- ALL already searched (NEVER repeat any of these): {all_searched_str}\n\n"
             "In 1–2 sentences: is this scan performing well? "
-            "Then suggest 3–5 new product-specific search keywords (NOT already listed above). "
+            "Then suggest 3–5 new product-specific search keywords that are NOT in the already-searched list above. "
             "Output suggested keywords as a ```json array."
         )
 

@@ -1015,9 +1015,10 @@ class FBAdsScraper:
                             if kw not in self._searched_keywords:
                                 queue.append((kw, depth + 1))
                         if ai_kws:
-                            save_state(self.state_file, self._snapshot_state(queue))
                             expanded = True
-                            continue
+                            # NOTE: no `continue` here — we intentionally fall through
+                            # so the injection check below always runs.  The `expanded`
+                            # flag already prevents redundant phrase expansion.
 
                     if not expanded:
                         # Phrase-based fallback: bigrams/trigrams from ad copy
@@ -1054,11 +1055,16 @@ class FBAdsScraper:
                 save_state(self.state_file, self._snapshot_state(queue))
 
                 # ── Check GUI control signals ─────────────────────────────
-                # Check for AI-injected keywords (written by the expert module)
+                # Check for AI-injected keywords (written by the expert module).
+                # Always inject at depth 1 — expert guidance is fresh input, not a
+                # continuation of the current BFS level.  Using `depth + 1` would
+                # push keywords to depth 3+ when the scan is already deep, meaning
+                # they'd never generate further expansion even if max_keyword_depth
+                # allows it.  appendleft → processed next, before queued BFS items.
                 injected = _read_and_clear_inject()
                 for kw in injected:
                     if kw not in self._searched_keywords:
-                        queue.appendleft((kw, depth + 1))
+                        queue.appendleft((kw, 1))
                         logger.info(f"  AI expert injected keyword: '{kw}'")
 
                 ctrl = _read_control()
