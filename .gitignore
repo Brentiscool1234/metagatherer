@@ -10,3 +10,7 @@ results_*.csv
 dist/
 build/
 .DS_Store
+*.db
+scraper_state.json
+tiktok_cookies.json
+shopify_url_cache.json
