@@ -896,7 +896,14 @@ class AdsLibraryBrowser:
                 logger.debug(f"  Autocomplete: search box not found for {page_name!r}")
                 return 0
 
-            # Clear + type the page name to trigger the autocomplete
+            # Click first to ensure focus, then clear + type to trigger autocomplete.
+            # Some FB page states leave the box rendered but not active — send_keys
+            # silently does nothing if the element doesn't have focus.
+            try:
+                search_box.click()
+                time.sleep(0.4)
+            except Exception:
+                pass
             search_box.clear()
             search_box.send_keys(page_name)
             time.sleep(2.5)   # wait for the Advertisers panel to load
