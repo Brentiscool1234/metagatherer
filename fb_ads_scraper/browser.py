@@ -653,7 +653,10 @@ class AdsLibraryBrowser:
             self._wait_for_ads(timeout=10)
 
             # Extract follower count — skip if already known from Phase 1 data.
-            # Retry up to 3 times (panel often renders late)
+            # Poll for up to 8s: React renders the advertiser panel independently
+            # from the ad cards, so _wait_for_ads() returning doesn't mean the
+            # follower count is in the DOM yet.  Scroll to top first so the panel
+            # is in the viewport (lazy renderers may skip off-screen content).
             _FOLLOWER_JS = r"""
                 // Strategy 1: scan specific advertiser-panel elements first
                 // (the <aside> / left-panel in the page-specific Ads Library view)
@@ -696,17 +699,26 @@ class AdsLibraryBrowser:
                 }
                 return '';
             """
-            for _attempt in range(3):
+            try:
+                self._driver.execute_script("window.scrollTo(0, 0);")
+                time.sleep(0.3)
+            except Exception:
+                pass
+
+            _fl_deadline = time.time() + 8.0
+            while time.time() < _fl_deadline and follower_count == 0:
                 try:
                     follower_text = self._driver.execute_script(_FOLLOWER_JS) or ""
                     if follower_text:
                         follower_count = parse_follower_count(follower_text)
-                        logger.debug(f"  Followers {page_id}: {follower_text!r} → {follower_count}")
                         if follower_count:
+                            logger.debug(
+                                f"  Followers {page_id}: {follower_text!r} → {follower_count}"
+                            )
                             break
-                    time.sleep(1.0)
                 except Exception:
                     break
+                time.sleep(0.8)
 
             # Fallback: type the page name into the Ads Library search box and
             # read the follower count from the autocomplete "Advertisers" panel.
@@ -887,7 +899,7 @@ class AdsLibraryBrowser:
             # Clear + type the page name to trigger the autocomplete
             search_box.clear()
             search_box.send_keys(page_name)
-            time.sleep(1.8)   # wait for the Advertisers panel to load
+            time.sleep(2.5)   # wait for the Advertisers panel to load
 
             # Extract the follower count from the autocomplete dropdown
             follower_text = self._driver.execute_script(r"""

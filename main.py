@@ -110,9 +110,11 @@ def _setup_logging(verbose: bool):
 @click.option("--tiktok-login", is_flag=True, default=False,
               help="Open a browser to log in to TikTok and save session cookies, then exit.")
 @click.option("--until-winner", is_flag=True, default=False,
-              help="Keep searching until at least one winner is found (see --keyword-cap).")
-@click.option("--keyword-cap", default=500, show_default=True, type=int,
-              help="Max total keywords when --until-winner is active.")
+              help="Keep searching until --target-winners winners are found.")
+@click.option("--target-winners", default=1, show_default=True, type=int,
+              help="Number of winners to find before stopping (requires --until-winner).")
+@click.option("--keyword-cap", default=0, show_default=True, type=int,
+              help="Max total keywords in --until-winner mode. 0 = no limit (runs until winner found).")
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
 @click.option("--discord-webhook", default=None, envvar="DISCORD_WEBHOOK_URL",
               help="Discord webhook URL for winner notifications (or set DISCORD_WEBHOOK_URL in .env).")
@@ -122,7 +124,7 @@ def main(
     niche, keywords, max_keywords, keyword_depth, max_ads_per_keyword,
     video_only, require_shop_now, headless, output, no_csv,
     facebook, tiktok, tiktok_login, state_file, reset, verbose, until_winner,
-    keyword_cap, discord_webhook,
+    target_winners, keyword_cap, discord_webhook,
 ):
     """MetaGatherer: Find winning ecommerce products in the Facebook Ads Library."""
     _setup_logging(verbose)
@@ -211,8 +213,14 @@ def main(
             reset=reset,
             niche=niche or None,
         )
-        _UNTIL_WINNER_CAP = max(keyword_cap, max_keywords)
-        _EXTEND_BY        = max(50, _UNTIL_WINNER_CAP // 10)
+        # keyword_cap=0 means no limit — run BFS until winner(s) found naturally.
+        # keyword_cap>0 is an explicit ceiling on total keywords searched.
+        if keyword_cap > 0:
+            _UNTIL_WINNER_CAP = max(keyword_cap, max_keywords)
+            _EXTEND_BY        = max(50, _UNTIL_WINNER_CAP // 10)
+        else:
+            _UNTIL_WINNER_CAP = 999_999   # effectively unlimited
+            _EXTEND_BY        = 100       # inject 100 new phrases per extension round
         _extra_kws = list(keywords) if keywords else None
 
         all_products = scraper.run(extra_keywords=_extra_kws, stop_on_winner=until_winner)
@@ -223,13 +231,17 @@ def main(
                 _winners_so_far = [
                     w for w in all_products if getattr(w, "score", 0) >= WINNER_THRESHOLD
                 ]
-                if _winners_so_far:
+                if len(_winners_so_far) >= target_winners:
+                    console.print(
+                        f"[green]Found {len(_winners_so_far)} winner(s) "
+                        f"— target of {target_winners} reached.[/green]"
+                    )
                     break
                 _searched = len(scraper._searched_keywords)
                 if _searched >= _UNTIL_WINNER_CAP:
                     console.print(
                         f"[yellow]Searched {_searched} keywords "
-                        f"({_UNTIL_WINNER_CAP} cap) — no winner found.[/yellow]"
+                        f"(cap: {_UNTIL_WINNER_CAP}) — stopping.[/yellow]"
                     )
                     break
                 # Generate new keywords from all collected ad bodies
@@ -242,9 +254,9 @@ def main(
                     break
                 scraper.max_keywords = min(_searched + _EXTEND_BY, _UNTIL_WINNER_CAP)
                 console.print(
-                    f"[cyan]No winners yet ({_searched} keywords searched). "
-                    f"Extending to {scraper.max_keywords} with "
-                    f"{len(_new_kws)} new keywords — continuing...[/cyan]"
+                    f"[cyan]No winners yet ({_searched} kw searched, "
+                    f"target {target_winners}). "
+                    f"Extending with {len(_new_kws)} new keywords...[/cyan]"
                 )
                 all_products = scraper.run(extra_keywords=_new_kws, stop_on_winner=True)
 

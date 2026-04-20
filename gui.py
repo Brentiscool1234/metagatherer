@@ -258,22 +258,29 @@ class App(tk.Tk):
         # ── Control buttons ───────────────────────────────────────────────────
         self._section(left, "Controls")
 
-        # "Until winner" row with keyword cap spinner
+        # "Until winner" row with target-winners and optional keyword cap
         until_row = tk.Frame(left, bg=BG)
         until_row.pack(fill="x", pady=1)
-        tk.Checkbutton(until_row, text="Keep scanning until winner",
+        tk.Checkbutton(until_row, text="Run until",
                        variable=self.v_until_winner, font=FONT,
                        bg=BG, fg=FG, activebackground=BG, activeforeground=FG,
                        selectcolor=BG3, cursor="hand2").pack(side="left")
-        tk.Label(until_row, text="cap:", font=FONT, bg=BG, fg=FG_DIM).pack(side="left", padx=(6, 2))
-        self.v_keyword_cap = tk.IntVar(value=500)
-        tk.Spinbox(until_row, from_=50, to=5000, increment=50,
+        self.v_target_winners = tk.IntVar(value=1)
+        tk.Spinbox(until_row, from_=1, to=50, increment=1,
+                   textvariable=self.v_target_winners,
+                   font=FONT, bg=BG2, fg=FG, buttonbackground=BG3,
+                   insertbackground=FG, bd=0,
+                   highlightbackground=BG3, highlightthickness=1,
+                   width=3).pack(side="left", padx=(4, 0))
+        tk.Label(until_row, text="winner(s)  cap:", font=FONT, bg=BG, fg=FG_DIM).pack(side="left", padx=(3, 2))
+        self.v_keyword_cap = tk.IntVar(value=0)
+        tk.Spinbox(until_row, from_=0, to=10000, increment=50,
                    textvariable=self.v_keyword_cap,
                    font=FONT, bg=BG2, fg=FG, buttonbackground=BG3,
                    insertbackground=FG, bd=0,
                    highlightbackground=BG3, highlightthickness=1,
                    width=5).pack(side="left")
-        tk.Label(until_row, text="kw", font=FONT, bg=BG, fg=FG_DIM).pack(side="left", padx=(2, 0))
+        tk.Label(until_row, text="kw (0=∞)", font=FONT, bg=BG, fg=FG_DIM).pack(side="left", padx=(2, 0))
 
         # Overnight mode — chain queued niches until N winners found
         overnight_row = tk.Frame(left, bg=BG)
@@ -876,6 +883,7 @@ class App(tk.Tk):
         if self.v_no_csv.get():       cmd.append("--no-csv")
         if self.v_until_winner.get():
             cmd.append("--until-winner")
+            cmd += ["--target-winners", str(self.v_target_winners.get())]
             cmd += ["--keyword-cap", str(self.v_keyword_cap.get())]
         wh = self.v_discord_wh.get().strip()
         if wh:
