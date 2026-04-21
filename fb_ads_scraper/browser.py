@@ -359,6 +359,13 @@ class AdsLibraryBrowser:
         self._driver: Optional[webdriver.Chrome] = None
         self._cookies_loaded = False
 
+    def _is_logged_in(self) -> bool:
+        """Return True if a Facebook login session cookie is present."""
+        try:
+            return any(c.get("name") == "c_user" for c in self._driver.get_cookies())
+        except Exception:
+            return False
+
     def start(self):
         logger.info("Starting Chrome browser...")
         self._driver = _make_driver(headless=self.headless)
@@ -366,13 +373,48 @@ class AdsLibraryBrowser:
             logger.info("Chrome window opened — don't close it during the scan.")
 
         # Navigate to Facebook first (required before loading cookies)
-        self._driver.get("https://www.facebook.com/ads/library/")
+        self._driver.get("https://www.facebook.com/")
         time.sleep(3)
         self._load_cookies()
         if self._cookies_loaded:
-            # Reload with cookies applied
-            self._driver.get("https://www.facebook.com/ads/library/")
-            time.sleep(3)
+            self._driver.get("https://www.facebook.com/")
+            time.sleep(2)
+
+        # If the browser is visible and not logged in, pause so the user can
+        # log into Facebook manually.  A logged-in session bypasses the bot
+        # detection that causes blank results in the Ads Library.
+        if not self.headless and not self._is_logged_in():
+            print(
+                "\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "  Facebook is blocking ads (bot detection active).\n"
+                "  Fix: log into Facebook in the browser window now.\n"
+                "  The scan will start automatically once you're in.\n"
+                "  Waiting up to 3 minutes...\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+                flush=True,
+            )
+            deadline = time.time() + 180
+            last_msg = 0.0
+            while time.time() < deadline:
+                if self._is_logged_in():
+                    self._save_cookies()
+                    print("✓ Logged in — session saved, starting scan now.\n", flush=True)
+                    break
+                if time.time() - last_msg >= 20:
+                    remaining = int(deadline - time.time())
+                    print(f"  Still waiting for login... ({remaining}s left)", flush=True)
+                    last_msg = time.time()
+                time.sleep(2)
+            else:
+                print(
+                    "  Login window expired — continuing without login.\n"
+                    "  Ads may not load; re-run and log in when prompted.\n",
+                    flush=True,
+                )
+
+        self._driver.get("https://www.facebook.com/ads/library/")
+        time.sleep(3)
         self._dismiss_dialogs()
 
     def stop(self):
