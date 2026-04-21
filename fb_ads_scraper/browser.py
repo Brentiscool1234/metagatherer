@@ -928,21 +928,31 @@ class AdsLibraryBrowser:
                 time.sleep(0.4)
             except Exception:
                 pass
+            # Count headings already on the page BEFORE typing so we can detect
+            # when the autocomplete dropdown adds new ones.
+            try:
+                _pre_heading_count = len(self._driver.find_elements(
+                    By.CSS_SELECTOR, '[role="heading"]'))
+            except Exception:
+                _pre_heading_count = 0
+
             search_box.clear()
             search_box.send_keys(page_name)
 
-            # Wait for the autocomplete dropdown to appear (role="heading" from FB's DOM).
-            # Poll up to 4 seconds — most cases resolve in ~1.5s.
+            # Wait for the autocomplete dropdown to appear: poll until the heading
+            # count grows (new headings = dropdown rendered) or 4s passes.
             _ac_deadline = time.time() + 4.0
             while time.time() < _ac_deadline:
                 try:
-                    if self._driver.find_elements(By.CSS_SELECTOR, '[role="heading"]'):
+                    _cur = len(self._driver.find_elements(
+                        By.CSS_SELECTOR, '[role="heading"]'))
+                    if _cur > _pre_heading_count:
                         break
                 except Exception:
                     pass
-                time.sleep(0.4)
+                time.sleep(0.35)
             else:
-                time.sleep(0.5)  # final wait if poll timed out
+                time.sleep(0.5)  # extra wait if poll timed out
 
             # Extract follower count from the autocomplete dropdown.
             # FB's actual DOM: page name in role="heading" aria-level="3",
