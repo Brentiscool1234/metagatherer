@@ -896,7 +896,8 @@ class AdsLibraryBrowser:
             time.sleep(1.5)
             self._dismiss_dialogs()
 
-            # Find the search input — Facebook uses several different attributes
+            # Find the search input — accept any visible input; enabled check is
+            # deferred because FB keeps the box disabled until it's clicked.
             search_box = None
             for selector in [
                 'input[placeholder*="Search ads"]',
@@ -904,11 +905,12 @@ class AdsLibraryBrowser:
                 'input[type="search"]',
                 'input[aria-label*="Search"]',
                 'input[data-testid*="search"]',
+                'input[type="text"]',
             ]:
                 try:
                     els = self._driver.find_elements(By.CSS_SELECTOR, selector)
                     for el in els:
-                        if el.is_displayed() and el.is_enabled():
+                        if el.is_displayed():   # don't require enabled yet
                             search_box = el
                             break
                 except Exception:
@@ -916,14 +918,14 @@ class AdsLibraryBrowser:
                 if search_box:
                     break
 
-            # Also try finding by XPath if CSS selectors failed
+            # XPath fallback
             if not search_box:
                 try:
                     els = self._driver.find_elements(
                         By.XPATH, "//input[@type='text' or @type='search']"
                     )
                     for el in els:
-                        if el.is_displayed() and el.is_enabled():
+                        if el.is_displayed():
                             search_box = el
                             break
                 except Exception:
@@ -933,11 +935,11 @@ class AdsLibraryBrowser:
                 logger.debug(f"  Autocomplete: search box not found for {page_name!r}")
                 return 0
 
-            # Click the search box to open the mode-selection dropdown
-            # (FB shows "Keywords" vs "Advertisers" tabs after clicking).
+            # Click the search box — this activates FB's JS and enables the input,
+            # and opens the mode-selection dropdown (Keywords vs Advertisers).
             try:
                 search_box.click()
-                time.sleep(0.6)
+                time.sleep(0.7)   # wait for JS to enable the input + show mode tabs
             except Exception:
                 pass
 
@@ -990,7 +992,7 @@ class AdsLibraryBrowser:
                 ]:
                     _els = self._driver.find_elements(By.CSS_SELECTOR, _sel)
                     for _el in _els:
-                        if _el.is_displayed() and _el.is_enabled():
+                        if _el.is_displayed():
                             search_box = _el
                             break
                     if search_box:
