@@ -15,13 +15,14 @@ logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(message)s")
 
 from fb_ads_scraper.browser import AdsLibraryBrowser
 
-page_names = [a for a in sys.argv[1:] if not a.startswith("--")]
+page_names = [a for a in sys.argv[1:] if not a.startswith("--") and not a.startswith("--country")]
 headless = "--headless" in sys.argv
+country_arg = next((a.split("=")[1] for a in sys.argv[1:] if a.startswith("--country=")), "BE")
 
 if not page_names:
     page_names = ["Aqua-Cats-USA"]
 
-browser = AdsLibraryBrowser(countries=["US"], headless=headless)
+browser = AdsLibraryBrowser(countries=[country_arg], headless=headless)
 print("Starting browser...")
 browser.start()
 print("Browser started OK — Chrome is open")

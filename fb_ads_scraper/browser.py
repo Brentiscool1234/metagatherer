@@ -885,8 +885,14 @@ class AdsLibraryBrowser:
             return 0
 
         try:
-            # Navigate to the Ads Library home (has the search box)
-            self._driver.get(ADS_LIBRARY_BASE)
+            # Navigate to the Ads Library search page WITH country parameter —
+            # the bare base URL shows a different landing page without the search UI.
+            _country = self.countries[0] if self.countries else "US"
+            _ac_url = (
+                f"{ADS_LIBRARY_BASE}?active_status=active&ad_type=all"
+                f"&country={_country}&media_type=all"
+            )
+            self._driver.get(_ac_url)
             time.sleep(1.5)
             self._dismiss_dialogs()
 
