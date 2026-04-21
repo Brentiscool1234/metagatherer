@@ -538,7 +538,10 @@ class AdsLibraryBrowser:
         return False
 
     def search_keyword(self, keyword: str, max_ads: int = 120) -> list[dict]:
-        country = self.countries[0] if self.countries else "US"
+        # EU countries (e.g. BE, DE, FR) show a restricted "Ad category" UI in the
+        # Ads Library that blocks keyword search — the URL redirects to the homepage.
+        # Use country=ALL which always shows the standard keyword search interface.
+        country = "ALL"
 
         all_ads: list[dict] = []
         seen_keys: set[str] = set()
