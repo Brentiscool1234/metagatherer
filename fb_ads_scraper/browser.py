@@ -933,14 +933,73 @@ class AdsLibraryBrowser:
                 logger.debug(f"  Autocomplete: search box not found for {page_name!r}")
                 return 0
 
-            # Click first to ensure focus, then clear + type to trigger autocomplete.
-            # Some FB page states leave the box rendered but not active — send_keys
-            # silently does nothing if the element doesn't have focus.
+            # Click the search box to open the mode-selection dropdown
+            # (FB shows "Keywords" vs "Advertisers" tabs after clicking).
             try:
                 search_box.click()
-                time.sleep(0.4)
+                time.sleep(0.6)
             except Exception:
                 pass
+
+            # Switch to "Advertisers" mode — only that mode shows follower counts
+            # in the autocomplete ("4K follow this"). Try multiple selector strategies.
+            _switched = False
+            for _adv_js in [
+                # Click any visible button/div whose text is exactly or contains "Advertiser"
+                """
+                var els = Array.prototype.slice.call(document.querySelectorAll(
+                    'div[role="tab"],div[role="button"],button,li,span'));
+                for (var i = 0; i < els.length; i++) {
+                    var t = (els[i].innerText || els[i].textContent || '').trim();
+                    if (/^advertiser/i.test(t) && t.length < 40 && els[i].offsetParent) {
+                        els[i].click(); return true;
+                    }
+                }
+                return false;
+                """,
+                # Fallback: any element with aria-label containing "advertiser"
+                """
+                var els = Array.prototype.slice.call(document.querySelectorAll('[aria-label]'));
+                for (var i = 0; i < els.length; i++) {
+                    var a = (els[i].getAttribute('aria-label') || '').toLowerCase();
+                    if (a.indexOf('advertiser') !== -1 && els[i].offsetParent) {
+                        els[i].click(); return true;
+                    }
+                }
+                return false;
+                """,
+            ]:
+                try:
+                    _switched = self._driver.execute_script(_adv_js)
+                    if _switched:
+                        logger.debug("  Autocomplete: switched to Advertisers mode")
+                        time.sleep(0.5)
+                        break
+                except Exception:
+                    pass
+
+            if not _switched:
+                logger.debug("  Autocomplete: could not find Advertisers tab — trying anyway")
+
+            # Re-find the input (switching modes may replace the DOM element)
+            try:
+                for _sel in [
+                    'input[placeholder*="Search"]',
+                    'input[type="search"]',
+                    'input[type="text"]',
+                ]:
+                    _els = self._driver.find_elements(By.CSS_SELECTOR, _sel)
+                    for _el in _els:
+                        if _el.is_displayed() and _el.is_enabled():
+                            search_box = _el
+                            break
+                    if search_box:
+                        break
+                search_box.click()
+                time.sleep(0.3)
+            except Exception:
+                pass
+
             # Count headings already on the page BEFORE typing so we can detect
             # when the autocomplete dropdown adds new ones.
             try:
