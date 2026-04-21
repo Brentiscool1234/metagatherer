@@ -957,9 +957,22 @@ class AdsLibraryBrowser:
 
             if not _switched:
                 logger.debug("  Autocomplete: Advertisers tab not found — trying anyway")
+                # Tab may appear after mode-switch; dump visible text for debugging
+                _vis = self._driver.execute_script("""
+                    var all = Array.prototype.slice.call(document.querySelectorAll(
+                        'div[role="tab"],div[role="button"],button,span,li'));
+                    var found = [];
+                    for (var i=0; i<all.length && found.length<15; i++) {
+                        var t=(all[i].innerText||all[i].textContent||'').trim();
+                        if (t && t.length < 60 && all[i].offsetParent) found.push(t);
+                    }
+                    return found;
+                """)
+                logger.debug(f"  Autocomplete: visible tab-like elements: {_vis}")
 
-            # Step 3: re-activate the input (mode switch may have moved focus),
-            # then type via ActionChains (sends to whatever has focus — no element needed).
+            # Step 3: re-focus the input, then use CDP Input.dispatchKeyEvent to type.
+            # CDP sends OS-level keyboard events that bypass ALL disabled/enabled checks
+            # and trigger browser-native autocomplete handlers.
             self._driver.execute_script("""
                 var inputs = Array.prototype.slice.call(document.querySelectorAll('input'));
                 for (var i = 0; i < inputs.length; i++) {
@@ -970,7 +983,7 @@ class AdsLibraryBrowser:
                     break;
                 }
             """)
-            time.sleep(0.2)
+            time.sleep(0.3)
 
             # Count headings before typing to detect when dropdown appears
             try:
@@ -978,13 +991,33 @@ class AdsLibraryBrowser:
                     By.CSS_SELECTOR, '[role="heading"]'))
             except Exception:
                 _pre = 0
+            logger.debug(f"  Autocomplete: heading count before typing: {_pre}")
 
-            # Select-all + type — ActionChains targets the focused element,
-            # completely bypassing Selenium element interactability checks.
-            (ActionChains(self._driver)
-                .key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL)
-                .send_keys(page_name)
-                .perform())
+            # CDP-level typing — undetectable as automation, triggers all native events
+            try:
+                # Clear existing value first
+                self._driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
+                    "type": "keyDown", "key": "a",
+                    "modifiers": 2,  # Ctrl
+                })
+                self._driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
+                    "type": "keyUp", "key": "a", "modifiers": 2,
+                })
+                time.sleep(0.05)
+                # Type each character
+                for _ch in page_name:
+                    self._driver.execute_cdp_cmd("Input.dispatchKeyEvent", {
+                        "type": "char", "text": _ch,
+                    })
+                    time.sleep(0.03)
+                logger.debug(f"  Autocomplete: CDP-typed {page_name!r}")
+            except Exception as _cdp_e:
+                # CDP not available (non-Chrome) — fall back to ActionChains
+                logger.debug(f"  Autocomplete: CDP failed ({_cdp_e!s:.60}), using ActionChains")
+                (ActionChains(self._driver)
+                    .key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL)
+                    .send_keys(page_name)
+                    .perform())
 
             # Step 4: wait for autocomplete dropdown (new headings = it appeared)
             _deadline = time.time() + 4.5
