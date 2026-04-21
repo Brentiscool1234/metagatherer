@@ -930,38 +930,96 @@ class AdsLibraryBrowser:
                 pass
             search_box.clear()
             search_box.send_keys(page_name)
-            time.sleep(2.5)   # wait for the Advertisers panel to load
 
-            # Extract the follower count from the autocomplete dropdown
-            follower_text = self._driver.execute_script(r"""
-                // Scan autocomplete suggestion rows first (most targeted)
-                var items = Array.prototype.slice.call(
-                    document.querySelectorAll(
-                        '[role="option"],[role="listitem"],[role="suggestion"],' +
-                        '[data-testid*="suggest"],[class*="suggest"]'));
-                for (var j = 0; j < items.length; j++) {
-                    var it = (items[j].innerText || items[j].textContent || '').trim();
-                    // "54K follow this" / "54K followers"
-                    var fm = it.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(follow(?:ers?)?(?:\s+this)?|likes?)/i);
-                    if (fm) return fm[0];
-                    // "followers · 54K"
-                    var fm2 = it.match(/followers?\s*[·:\-\u00b7]?\s*([\d][\d,\.]*\s*[KkMm])/i);
-                    if (fm2) return fm2[0];
+            # Wait for the autocomplete dropdown to appear (role="heading" from FB's DOM).
+            # Poll up to 4 seconds — most cases resolve in ~1.5s.
+            _ac_deadline = time.time() + 4.0
+            while time.time() < _ac_deadline:
+                try:
+                    if self._driver.find_elements(By.CSS_SELECTOR, '[role="heading"]'):
+                        break
+                except Exception:
+                    pass
+                time.sleep(0.4)
+            else:
+                time.sleep(0.5)  # final wait if poll timed out
+
+            # Extract follower count from the autocomplete dropdown.
+            # FB's actual DOM: page name in role="heading" aria-level="3",
+            # follow text "@handle · 4K follow this · Category" in a sibling <div>.
+            # The dropdown only appears after click + send_keys — already done above.
+            follower_text = self._driver.execute_script("""
+                var targetName = arguments[0] || '';
+                function normName(s) { return s.toLowerCase().replace(/[\s\-_]+/g, ''); }
+                var tNorm = normName(targetName);
+
+                function extractFollow(text) {
+                    // "4K follow this" or "4K followers"
+                    var m1 = text.match(/(\d[\d,\.]*\s*[KkMm]?)\s*follow(?:ers?)?(?:\s+this)?/i);
+                    if (m1) return m1[0];
+                    // "followers · 4K"
+                    var m2 = text.match(/followers?\s*[\u00b7\xb7:\-]\s*(\d[\d,\.]*\s*[KkMm])/i);
+                    if (m2) return m2[0];
+                    return null;
                 }
-                // Fall back to full page text
-                var t = document.body.innerText || '';
-                var patterns = [
-                    /([\d][\d,\.]*\s*[KkMm]?)\s*follow this/i,
-                    /([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|likes?)/i,
-                    /followers?\s*[·:\-\u00b7]?\s*([\d][\d,\.]*\s*[KkMm])/i,
-                    /[·\xb7]\s*([\d][\d,\.]*\s*[KkMm]?)\s*follow/i,
+
+                // Pass 1: find role="heading" matching page name, walk up to container,
+                // search container text for follow count.
+                var headings = Array.prototype.slice.call(
+                    document.querySelectorAll('[role="heading"]'));
+                for (var h = 0; h < headings.length; h++) {
+                    var hText = (headings[h].innerText || headings[h].textContent || '').trim();
+                    if (!hText) continue;
+                    var hNorm = normName(hText);
+                    if (hNorm.indexOf(tNorm) === -1 && tNorm.indexOf(hNorm) === -1) continue;
+                    // Walk up to a container that also has the follow text
+                    var el = headings[h];
+                    for (var depth = 0; depth < 8; depth++) {
+                        el = el.parentElement;
+                        if (!el) break;
+                        var cText = el.innerText || el.textContent || '';
+                        var res = extractFollow(cText);
+                        if (res) return res;
+                    }
+                }
+
+                // Pass 2: scan shallow divs (<=3 child elements) for "follow this"
+                // and either matching the page name or tracking the largest count.
+                var allDivs = Array.prototype.slice.call(document.querySelectorAll('div'));
+                var bestCount = 0;
+                var bestMatch = '';
+                for (var d = 0; d < allDivs.length; d++) {
+                    if ((allDivs[d].childElementCount || 0) > 3) continue;
+                    var dt = (allDivs[d].innerText || allDivs[d].textContent || '').trim();
+                    if (!dt || dt.length > 200) continue;
+                    var res2 = extractFollow(dt);
+                    if (!res2) continue;
+                    // Best case: div text also mentions the page name
+                    if (tNorm && normName(dt).indexOf(tNorm) !== -1) return res2;
+                    // Track largest follow count as fallback
+                    var numM = res2.match(/(\d[\d,\.]*(?:\.\d+)?)\s*([KkMm]?)/);
+                    if (numM) {
+                        var n = parseFloat(numM[1].replace(/,/g, ''));
+                        var sfx = numM[2].toLowerCase();
+                        if (sfx === 'k') n *= 1000;
+                        if (sfx === 'm') n *= 1000000;
+                        if (n > bestCount) { bestCount = n; bestMatch = res2; }
+                    }
+                }
+                if (bestMatch) return bestMatch;
+
+                // Pass 3: full body text last resort
+                var bodyText = document.body.innerText || '';
+                var bp = [
+                    /(\d[\d,\.]*\s*[KkMm]?)\s*follow this/i,
+                    /(\d[\d,\.]*\s*[KkMm]?)\s*followers?/i,
                 ];
-                for (var i = 0; i < patterns.length; i++) {
-                    var m = t.match(patterns[i]);
-                    if (m) return m[0];
+                for (var i = 0; i < bp.length; i++) {
+                    var bm = bodyText.match(bp[i]);
+                    if (bm) return bm[0];
                 }
                 return '';
-            """) or ""
+            """, page_name) or ""
 
             if follower_text:
                 count = parse_follower_count(follower_text)
