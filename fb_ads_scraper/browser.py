@@ -877,6 +877,13 @@ class AdsLibraryBrowser:
         if not page_name or not self._driver:
             return 0
 
+        # Quick session-alive check before navigating
+        try:
+            _ = self._driver.title
+        except Exception as _e:
+            logger.debug(f"  Autocomplete: browser session dead ({_e!s:.60}) — skipping")
+            return 0
+
         try:
             # Navigate to the Ads Library home (has the search box)
             self._driver.get(ADS_LIBRARY_BASE)
