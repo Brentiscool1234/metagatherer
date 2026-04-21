@@ -866,252 +866,156 @@ class AdsLibraryBrowser:
 
     def get_followers_from_autocomplete(self, page_name: str) -> int:
         """
-        Type the page name into the Ads Library search box and read the follower
-        count from the 'Advertisers' autocomplete panel that appears.
+        Find the follower count for a Facebook page via the Ads Library search
+        autocomplete ("Advertisers" mode shows "4K follow this" in results).
 
-        This is the only reliable way to get follower counts — they appear in
-        the dropdown as "54K follow this" before you click through to the page.
+        Uses JavaScript + ActionChains throughout — no Selenium element objects —
+        so Facebook's disabled-until-clicked input never triggers is_enabled() checks.
 
         Returns 0 on failure.
         """
         if not page_name or not self._driver:
             return 0
 
-        # Quick session-alive check before navigating
         try:
             _ = self._driver.title
         except Exception as _e:
-            logger.debug(f"  Autocomplete: browser session dead ({_e!s:.60}) — skipping")
+            logger.debug(f"  Autocomplete: browser session dead — skipping")
             return 0
 
         try:
-            # Navigate to the Ads Library search page WITH country parameter —
-            # the bare base URL shows a different landing page without the search UI.
+            from selenium.webdriver.common.action_chains import ActionChains
+            from selenium.webdriver.common.keys import Keys
+
             _country = self.countries[0] if self.countries else "US"
             _ac_url = (
                 f"{ADS_LIBRARY_BASE}?active_status=active&ad_type=all"
                 f"&country={_country}&media_type=all"
             )
             self._driver.get(_ac_url)
-            time.sleep(1.5)
+            time.sleep(1.8)
             self._dismiss_dialogs()
 
-            # Find the search input — accept any visible input; enabled check is
-            # deferred because FB keeps the box disabled until it's clicked.
-            search_box = None
-            for selector in [
-                'input[placeholder*="Search ads"]',
-                'input[placeholder*="Search"]',
-                'input[type="search"]',
-                'input[aria-label*="Search"]',
-                'input[data-testid*="search"]',
-                'input[type="text"]',
-            ]:
-                try:
-                    els = self._driver.find_elements(By.CSS_SELECTOR, selector)
-                    for el in els:
-                        if el.is_displayed():   # don't require enabled yet
-                            search_box = el
-                            break
-                except Exception:
-                    pass
-                if search_box:
-                    break
-
-            # XPath fallback
-            if not search_box:
-                try:
-                    els = self._driver.find_elements(
-                        By.XPATH, "//input[@type='text' or @type='search']"
-                    )
-                    for el in els:
-                        if el.is_displayed():
-                            search_box = el
-                            break
-                except Exception:
-                    pass
-
-            # Use JS to find, enable, and focus the first visible input —
-            # bypasses Selenium's is_enabled() gate which rejects FB's initially-
-            # disabled search boxes before we've had a chance to click/activate them.
-            _activated = self._driver.execute_script("""
+            # Step 1: JS activates the first visible input (removes disabled,
+            # focuses, fires synthetic mouse events for FB's React handlers).
+            _found = self._driver.execute_script("""
                 var inputs = Array.prototype.slice.call(document.querySelectorAll('input'));
                 for (var i = 0; i < inputs.length; i++) {
                     var inp = inputs[i];
-                    if (!inp.offsetParent) continue;   // not in layout / invisible
+                    if (!inp.offsetParent) continue;
                     inp.removeAttribute('disabled');
                     inp.removeAttribute('readonly');
                     inp.focus();
-                    inp.click();
-                    // Dispatch a synthetic click so FB's React handlers fire
                     inp.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
                     inp.dispatchEvent(new MouseEvent('mouseup',   {bubbles:true}));
                     inp.dispatchEvent(new MouseEvent('click',     {bubbles:true}));
-                    return inp;
-                }
-                return null;
-            """)
-            if _activated:
-                # Re-acquire as a Selenium element by tag/placeholder so we can send_keys
-                try:
-                    _all = self._driver.find_elements(By.XPATH, "//input")
-                    for _e in _all:
-                        try:
-                            if _e.is_displayed():
-                                search_box = _e
-                                break
-                        except Exception:
-                            pass
-                except Exception:
-                    pass
-            time.sleep(0.7)   # let FB's JS open the Keywords/Advertisers mode panel
-
-            if not search_box:
-                logger.debug(f"  Autocomplete: search box not found for {page_name!r}")
-                return 0
-
-            # Switch to "Advertisers" mode — only that mode shows follower counts
-            # in the autocomplete ("4K follow this"). Try multiple selector strategies.
-            _switched = False
-            for _adv_js in [
-                # Click any visible button/div whose text is exactly or contains "Advertiser"
-                """
-                var els = Array.prototype.slice.call(document.querySelectorAll(
-                    'div[role="tab"],div[role="button"],button,li,span'));
-                for (var i = 0; i < els.length; i++) {
-                    var t = (els[i].innerText || els[i].textContent || '').trim();
-                    if (/^advertiser/i.test(t) && t.length < 40 && els[i].offsetParent) {
-                        els[i].click(); return true;
-                    }
+                    return true;
                 }
                 return false;
+            """)
+            if not _found:
+                logger.debug(f"  Autocomplete: no visible input on page for {page_name!r}")
+                return 0
+
+            time.sleep(0.8)  # wait for FB JS to open Keywords/Advertisers tabs
+
+            # Step 2: click the "Advertisers" tab so autocomplete shows page names
+            # with follower counts instead of keyword matches.
+            _switched = False
+            for _js in [
+                """
+                var els = Array.prototype.slice.call(document.querySelectorAll(
+                    'div[role="tab"],div[role="button"],button,li,span,div'));
+                for (var i = 0; i < els.length; i++) {
+                    var t = (els[i].innerText || els[i].textContent || '').trim();
+                    if (/^advertiser/i.test(t) && t.length < 50 && els[i].offsetParent) {
+                        els[i].click(); return 'tab:' + t;
+                    }
+                }
+                return null;
                 """,
-                # Fallback: any element with aria-label containing "advertiser"
                 """
                 var els = Array.prototype.slice.call(document.querySelectorAll('[aria-label]'));
                 for (var i = 0; i < els.length; i++) {
                     var a = (els[i].getAttribute('aria-label') || '').toLowerCase();
                     if (a.indexOf('advertiser') !== -1 && els[i].offsetParent) {
-                        els[i].click(); return true;
+                        els[i].click(); return 'aria:' + a;
                     }
                 }
-                return false;
+                return null;
                 """,
             ]:
                 try:
-                    _switched = self._driver.execute_script(_adv_js)
-                    if _switched:
-                        logger.debug("  Autocomplete: switched to Advertisers mode")
+                    _res = self._driver.execute_script(_js)
+                    if _res:
+                        logger.debug(f"  Autocomplete: Advertisers tab clicked ({_res})")
+                        _switched = True
                         time.sleep(0.5)
                         break
                 except Exception:
                     pass
 
             if not _switched:
-                logger.debug("  Autocomplete: could not find Advertisers tab — trying anyway")
+                logger.debug("  Autocomplete: Advertisers tab not found — trying anyway")
 
-            # Re-activate the input after mode switch (JS removes disabled + focuses)
-            try:
-                self._driver.execute_script("""
-                    var inputs = Array.prototype.slice.call(document.querySelectorAll('input'));
-                    for (var i = 0; i < inputs.length; i++) {
-                        if (!inputs[i].offsetParent) continue;
-                        inputs[i].removeAttribute('disabled');
-                        inputs[i].removeAttribute('readonly');
-                        inputs[i].focus();
-                        inputs[i].click();
-                        inputs[i].dispatchEvent(new MouseEvent('click', {bubbles:true}));
-                        break;
-                    }
-                """)
-                time.sleep(0.3)
-            except Exception:
-                pass
+            # Step 3: re-activate the input (mode switch may have moved focus),
+            # then type via ActionChains (sends to whatever has focus — no element needed).
+            self._driver.execute_script("""
+                var inputs = Array.prototype.slice.call(document.querySelectorAll('input'));
+                for (var i = 0; i < inputs.length; i++) {
+                    if (!inputs[i].offsetParent) continue;
+                    inputs[i].removeAttribute('disabled');
+                    inputs[i].removeAttribute('readonly');
+                    inputs[i].focus();
+                    break;
+                }
+            """)
+            time.sleep(0.2)
 
-            # Count headings already on the page BEFORE typing so we can detect
-            # when the autocomplete dropdown adds new ones.
+            # Count headings before typing to detect when dropdown appears
             try:
-                _pre_heading_count = len(self._driver.find_elements(
+                _pre = len(self._driver.find_elements(
                     By.CSS_SELECTOR, '[role="heading"]'))
             except Exception:
-                _pre_heading_count = 0
+                _pre = 0
 
-            # Use JS to set value + fire input/change events, then send_keys for
-            # the autocomplete trigger. JS bypasses Selenium's disabled-element guard.
-            try:
-                self._driver.execute_script("""
-                    var inputs = Array.prototype.slice.call(document.querySelectorAll('input'));
-                    for (var i = 0; i < inputs.length; i++) {
-                        if (!inputs[i].offsetParent) continue;
-                        inputs[i].removeAttribute('disabled');
-                        inputs[i].removeAttribute('readonly');
-                        inputs[i].focus();
-                        break;
-                    }
-                """)
-                time.sleep(0.2)
-            except Exception:
-                pass
-            try:
-                search_box.clear()
-            except Exception:
-                pass
-            try:
-                search_box.send_keys(page_name)
-            except Exception:
-                # Last resort: JS-based character-by-character input
-                try:
-                    self._driver.execute_script("""
-                        var inp = null;
-                        var inputs = document.querySelectorAll('input');
-                        for (var i = 0; i < inputs.length; i++) {
-                            if (inputs[i].offsetParent) { inp = inputs[i]; break; }
-                        }
-                        if (!inp) return;
-                        inp.removeAttribute('disabled');
-                        inp.value = arguments[0];
-                        inp.dispatchEvent(new Event('input', {bubbles:true}));
-                        inp.dispatchEvent(new Event('change', {bubbles:true}));
-                    """, page_name)
-                except Exception:
-                    pass
+            # Select-all + type — ActionChains targets the focused element,
+            # completely bypassing Selenium element interactability checks.
+            (ActionChains(self._driver)
+                .key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL)
+                .send_keys(page_name)
+                .perform())
 
-            # Wait for the autocomplete dropdown to appear: poll until the heading
-            # count grows (new headings = dropdown rendered) or 4s passes.
-            _ac_deadline = time.time() + 4.0
-            while time.time() < _ac_deadline:
+            # Step 4: wait for autocomplete dropdown (new headings = it appeared)
+            _deadline = time.time() + 4.5
+            while time.time() < _deadline:
                 try:
                     _cur = len(self._driver.find_elements(
                         By.CSS_SELECTOR, '[role="heading"]'))
-                    if _cur > _pre_heading_count:
+                    if _cur > _pre:
+                        logger.debug(f"  Autocomplete: dropdown appeared ({_pre}→{_cur} headings)")
                         break
                 except Exception:
                     pass
                 time.sleep(0.35)
             else:
-                time.sleep(0.5)  # extra wait if poll timed out
+                time.sleep(0.5)
 
-            # Extract follower count from the autocomplete dropdown.
-            # FB's actual DOM: page name in role="heading" aria-level="3",
-            # follow text "@handle · 4K follow this · Category" in a sibling <div>.
-            # The dropdown only appears after click + send_keys — already done above.
+            # Step 5: extract follower count from the dropdown DOM
             follower_text = self._driver.execute_script("""
                 var targetName = arguments[0] || '';
                 function normName(s) { return s.toLowerCase().replace(/[\s\-_]+/g, ''); }
                 var tNorm = normName(targetName);
 
                 function extractFollow(text) {
-                    // "4K follow this" or "4K followers"
                     var m1 = text.match(/(\d[\d,\.]*\s*[KkMm]?)\s*follow(?:ers?)?(?:\s+this)?/i);
                     if (m1) return m1[0];
-                    // "followers · 4K"
                     var m2 = text.match(/followers?\s*[\u00b7\xb7:\-]\s*(\d[\d,\.]*\s*[KkMm])/i);
                     if (m2) return m2[0];
                     return null;
                 }
 
-                // Pass 1: find role="heading" matching page name, walk up to container,
-                // search container text for follow count.
+                // Pass 1: heading matching page name → walk up → extract follow count
                 var headings = Array.prototype.slice.call(
                     document.querySelectorAll('[role="heading"]'));
                 for (var h = 0; h < headings.length; h++) {
@@ -1119,53 +1023,39 @@ class AdsLibraryBrowser:
                     if (!hText) continue;
                     var hNorm = normName(hText);
                     if (hNorm.indexOf(tNorm) === -1 && tNorm.indexOf(hNorm) === -1) continue;
-                    // Walk up to a container that also has the follow text
                     var el = headings[h];
-                    for (var depth = 0; depth < 8; depth++) {
+                    for (var d = 0; d < 8; d++) {
                         el = el.parentElement;
                         if (!el) break;
-                        var cText = el.innerText || el.textContent || '';
-                        var res = extractFollow(cText);
+                        var res = extractFollow(el.innerText || el.textContent || '');
                         if (res) return res;
                     }
                 }
 
-                // Pass 2: scan shallow divs (<=3 child elements) for "follow this"
-                // and either matching the page name or tracking the largest count.
+                // Pass 2: shallow divs containing "follow this" + page name match
                 var allDivs = Array.prototype.slice.call(document.querySelectorAll('div'));
-                var bestCount = 0;
-                var bestMatch = '';
-                for (var d = 0; d < allDivs.length; d++) {
-                    if ((allDivs[d].childElementCount || 0) > 3) continue;
-                    var dt = (allDivs[d].innerText || allDivs[d].textContent || '').trim();
+                var best = '', bestN = 0;
+                for (var d2 = 0; d2 < allDivs.length; d2++) {
+                    if ((allDivs[d2].childElementCount || 0) > 3) continue;
+                    var dt = (allDivs[d2].innerText || allDivs[d2].textContent || '').trim();
                     if (!dt || dt.length > 200) continue;
                     var res2 = extractFollow(dt);
                     if (!res2) continue;
-                    // Best case: div text also mentions the page name
                     if (tNorm && normName(dt).indexOf(tNorm) !== -1) return res2;
-                    // Track largest follow count as fallback
-                    var numM = res2.match(/(\d[\d,\.]*(?:\.\d+)?)\s*([KkMm]?)/);
-                    if (numM) {
-                        var n = parseFloat(numM[1].replace(/,/g, ''));
-                        var sfx = numM[2].toLowerCase();
-                        if (sfx === 'k') n *= 1000;
-                        if (sfx === 'm') n *= 1000000;
-                        if (n > bestCount) { bestCount = n; bestMatch = res2; }
+                    var nm = res2.match(/(\d[\d,\.]*(?:\.\d+)?)\s*([KkMm]?)/);
+                    if (nm) {
+                        var n = parseFloat(nm[1].replace(/,/g,'')),
+                            s = nm[2].toLowerCase();
+                        if (s==='k') n*=1000; if (s==='m') n*=1000000;
+                        if (n > bestN) { bestN = n; best = res2; }
                     }
                 }
-                if (bestMatch) return bestMatch;
+                if (best) return best;
 
-                // Pass 3: full body text last resort
-                var bodyText = document.body.innerText || '';
-                var bp = [
-                    /(\d[\d,\.]*\s*[KkMm]?)\s*follow this/i,
-                    /(\d[\d,\.]*\s*[KkMm]?)\s*followers?/i,
-                ];
-                for (var i = 0; i < bp.length; i++) {
-                    var bm = bodyText.match(bp[i]);
-                    if (bm) return bm[0];
-                }
-                return '';
+                // Pass 3: body text last resort
+                var bt = document.body.innerText || '';
+                var bm = bt.match(/(\d[\d,\.]*\s*[KkMm]?)\s*follow(?:ers?)?(?:\s+this)?/i);
+                return bm ? bm[0] : '';
             """, page_name) or ""
 
             if follower_text:
