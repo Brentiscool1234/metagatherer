@@ -38,11 +38,20 @@ MONTH_MAP = {
 def parse_follower_count(text: str) -> int:
     """
     Parse a follower/like count string into an integer.
-    Handles both orderings FB uses:
+    Handles:
       "54K followers"        / "54K follow this"  / "818 likes"  (number first)
       "Followers · 54.2K"   / "Followers: 1.2M"                  (label first)
+      "12345 followers"      plain integer from JSON extraction
     """
     t = text.lower().replace(",", "").strip()
+    # Plain integer followed by "followers" (from JSON strategy)
+    import re as _re
+    m0 = _re.match(r"^(\d+)\s+followers?$", t)
+    if m0:
+        try:
+            return int(m0.group(1))
+        except ValueError:
+            pass
 
     def _parse_num(num_str: str, suffix: str) -> int:
         try:
@@ -658,43 +667,58 @@ class AdsLibraryBrowser:
             # follower count is in the DOM yet.  Scroll to top first so the panel
             # is in the viewport (lazy renderers may skip off-screen content).
             _FOLLOWER_JS = r"""
-                // Strategy 1: scan specific advertiser-panel elements first
-                // (the <aside> / left-panel in the page-specific Ads Library view)
+                // Strategy 0: embedded JSON data blobs — most reliable source.
+                // Facebook hydrates React from <script> tags as JSON; fan_count
+                // and follower_count are present even when the UI text is in a
+                // lazy or portal component that hasn't rendered yet.
+                var scripts = Array.prototype.slice.call(document.querySelectorAll('script'));
+                for (var si = 0; si < scripts.length; si++) {
+                    var sc = scripts[si].textContent || '';
+                    if (sc.length < 20 || sc.length > 3000000) continue;
+                    var mfc = sc.match(/"fan_count"\s*:\s*(\d+)/);
+                    if (mfc && parseInt(mfc[1]) > 0) return mfc[1] + ' followers';
+                    var mfl = sc.match(/"follower_count"\s*:\s*(\d+)/);
+                    if (mfl && parseInt(mfl[1]) > 0) return mfl[1] + ' followers';
+                    var mli = sc.match(/"likers?"\s*:\s*\{[^}]*"count"\s*:\s*(\d+)/);
+                    if (mli && parseInt(mli[1]) > 0) return mli[1] + ' followers';
+                    var mpl = sc.match(/"page_likers?"\s*:\s*\{[^}]*"count"\s*:\s*(\d+)/);
+                    if (mpl && parseInt(mpl[1]) > 0) return mpl[1] + ' followers';
+                    var msc2 = sc.match(/"subscribers_count"\s*:\s*(\d+)/);
+                    if (msc2 && parseInt(msc2[1]) > 0) return msc2[1] + ' followers';
+                }
+                // Strategy 1: short DOM element text
                 var panelCandidates = Array.prototype.slice.call(
                     document.querySelectorAll('aside,header,[role="complementary"],[role="banner"]'));
                 panelCandidates = panelCandidates.concat(
                     Array.prototype.slice.call(document.querySelectorAll('span,div,p')));
                 for (var pi = 0; pi < panelCandidates.length; pi++) {
                     var pt = (panelCandidates[pi].textContent || '').trim();
-                    if (pt.length > 60 || pt.length < 2) continue;
-                    // "54K followers" / "54K follow this" / "818 likes" / "7.8K people follow"
-                    var pm = pt.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(followers?|follow this|likes?|people follow)/i);
+                    if (pt.length > 80 || pt.length < 2) continue;
+                    var pm = pt.match(/(\d[\d,.]*\s*[KkMm]?)\s*(followers?|follow this|likes?|people follow)/i);
                     if (pm) return pt;
-                    // "followers · 54.2K" / "followers: 1.2M"
-                    var pm2 = pt.match(/followers?\s*[·:\-\u00b7]?\s*([\d][\d,\.]*\s*[KkMm])/i);
+                    var pm2 = pt.match(/followers?\s*[\u00b7:\-]?\s*(\d[\d,.]*\s*[KkMm])/i);
                     if (pm2) return pt;
                 }
                 // Strategy 2: full page text scan
                 var t = document.body.innerText || '';
-                var patterns = [
-                    /([\d][\d,\.]*\s*[KkMm]?)\s*follow this/i,
-                    /([\d][\d,\.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i,
-                    /([\d][\d,\.]*\s*[KkMm]?)\s*people follow/i,
-                    /followers?\s*[:\u00b7\u2022\xb7·\-]\s*([\d][\d,\.]*\s*[KkMm]?)/i,
-                    /[·\xb7]\s*([\d][\d,\.]*\s*[KkMm]?)\s*(follow(?:ers?)?|likes?)/i,
+                var patterns2 = [
+                    /(\d[\d,.]*\s*[KkMm]?)\s*follow this/i,
+                    /(\d[\d,.]*\s*[KkMm]?)\s*(people like this|followers?|likes?)/i,
+                    /(\d[\d,.]*\s*[KkMm]?)\s*people follow/i,
+                    /followers?\s*[:·\xb7\-]\s*(\d[\d,.]*\s*[KkMm]?)/i,
+                    /[·\xb7]\s*(\d[\d,.]*\s*[KkMm]?)\s*(follow(?:ers?)?|likes?)/i,
                 ];
-                for (var i = 0; i < patterns.length; i++) {
-                    var m = t.match(patterns[i]);
+                for (var i = 0; i < patterns2.length; i++) {
+                    var m = t.match(patterns2[i]);
                     if (m) return m[0];
                 }
-                // Strategy 3: aria-labels on any element
-                var metas = Array.prototype.slice.call(
-                    document.querySelectorAll('[aria-label]'));
+                // Strategy 3: aria-labels
+                var metas = Array.prototype.slice.call(document.querySelectorAll('[aria-label]'));
                 for (var j = 0; j < metas.length; j++) {
                     var al = (metas[j].getAttribute('aria-label') || '');
-                    var fm = al.match(/([\d][\d,\.]*\s*[KkMm]?)\s*(follow(?:ers?)?|likes?)/i);
+                    var fm = al.match(/(\d[\d,.]*\s*[KkMm]?)\s*(follow(?:ers?)?|likes?)/i);
                     if (fm) return fm[0];
-                    var fm2 = al.match(/followers?\s*[·:\-]?\s*([\d][\d,\.]*\s*[KkMm])/i);
+                    var fm2 = al.match(/followers?\s*[\u00b7:\-]?\s*(\d[\d,.]*\s*[KkMm])/i);
                     if (fm2) return fm2[0];
                 }
                 return '';
