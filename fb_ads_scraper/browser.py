@@ -749,26 +749,24 @@ class AdsLibraryBrowser:
             # Only trigger this if follower count is still unknown — if known_followers
             # was passed by the caller (from Phase-1 Apify/API data), skip entirely.
             if follower_count == 0:
+                # Fallback: visit facebook.com/profile.php?id=PAGE_ID directly.
+                # The public profile page always shows follower counts.
                 try:
-                    page_name_from_dom = self._driver.execute_script(r"""
-                        var links = Array.prototype.slice.call(
-                            document.querySelectorAll('a[href*="facebook.com/"]'));
-                        for (var i = 0; i < links.length; i++) {
-                            var t = (links[i].textContent || '').trim();
-                            if (t.length >= 3 && t.length <= 80
-                                    && links[i].href.indexOf('/ads/library') === -1
-                                    && links[i].href.indexOf('/help') === -1) {
-                                return t;
-                            }
-                        }
-                        return '';
-                    """) or ""
-                except Exception:
-                    page_name_from_dom = ""
-                search_name = page_name_from_dom or page_id
-                follower_count = self.get_followers_from_autocomplete(search_name)
-                # get_followers_from_autocomplete navigates to ADS_LIBRARY_BASE —
-                # return to this page's URL so the ad collection loop runs correctly.
+                    _fb_profile = f"https://www.facebook.com/profile.php?id={page_id}"
+                    self._driver.get(_fb_profile)
+                    time.sleep(2.0)
+                    # Reuse the same extraction JS — JSON blobs + DOM text + body scan
+                    _fl2 = self._driver.execute_script(_FOLLOWER_JS) or ""
+                    if _fl2:
+                        follower_count = parse_follower_count(_fl2)
+                        if follower_count:
+                            logger.debug(
+                                f"  Followers (profile page) {page_id}: {_fl2!r} → {follower_count}"
+                            )
+                except Exception as _fpe:
+                    logger.debug(f"  Profile-page follower lookup failed: {_fpe!s:.80}")
+
+                # Restore original Ads Library page
                 try:
                     self._driver.get(url)
                     time.sleep(PAGE_LOAD_WAIT)

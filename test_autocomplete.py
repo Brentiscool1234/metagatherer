@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Quick diagnostic test for get_followers_from_autocomplete.
+"""Quick test for follower extraction.
 
 Usage:
-    python test_autocomplete.py
-    python test_autocomplete.py "Aqua-Cats-USA"
-    python test_autocomplete.py "SomePage" "AnotherPage"
-    python test_autocomplete.py "SomePage" --headless
+    python test_autocomplete.py PAGE_ID
+    python test_autocomplete.py 939088612625692
+    python test_autocomplete.py 939088612625692 --country=BE
 """
 import logging
 import sys
@@ -13,39 +12,66 @@ import time
 
 logging.basicConfig(level=logging.DEBUG, format="%(levelname)s %(message)s")
 
-from fb_ads_scraper.browser import AdsLibraryBrowser
+from fb_ads_scraper.browser import AdsLibraryBrowser, parse_follower_count
 
-page_names = [a for a in sys.argv[1:] if not a.startswith("--") and not a.startswith("--country")]
+args = [a for a in sys.argv[1:] if not a.startswith("--")]
 headless = "--headless" in sys.argv
-country_arg = next((a.split("=")[1] for a in sys.argv[1:] if a.startswith("--country=")), "BE")
+country = next((a.split("=")[1] for a in sys.argv[1:] if a.startswith("--country=")), "BE")
 
-if not page_names:
-    page_names = ["Aqua-Cats-USA"]
+page_ids = args if args else ["939088612625692"]
 
-browser = AdsLibraryBrowser(countries=[country_arg], headless=headless)
+browser = AdsLibraryBrowser(countries=[country], headless=headless)
 print("Starting browser...")
 browser.start()
-print("Browser started OK — Chrome is open")
+print("Browser started OK")
 
 try:
-    for name in page_names:
+    for pid in page_ids:
         print(f"\n{'='*60}")
-        print(f"Testing: {name!r}")
+        print(f"Testing page_id: {pid!r}")
         print('='*60)
 
-        # Check session is still alive before calling
-        try:
-            _ = browser._driver.title
-        except Exception as e:
-            print(f"ERROR: Browser session is dead before test: {e}")
-            break
+        driver = browser._driver
 
-        count = browser.get_followers_from_autocomplete(name)
-        print(f"\nRESULT: {count} followers for {name!r}")
+        # Test 1: profile.php page
+        print("\n--- Test: facebook.com/profile.php?id=... ---")
+        url = f"https://www.facebook.com/profile.php?id={pid}"
+        driver.get(url)
+        time.sleep(2.5)
+        browser._dismiss_dialogs()
+        print(f"Title: {driver.title!r}")
 
-        # Small pause between lookups
-        if len(page_names) > 1:
-            time.sleep(1.5)
+        # Run the same extraction JS used in get_page_ads
+        from fb_ads_scraper.browser import AdsLibraryBrowser
+        result = driver.execute_script(r"""
+            // Strategy 0: JSON script blobs
+            var scripts = Array.prototype.slice.call(document.querySelectorAll('script'));
+            for (var si = 0; si < scripts.length; si++) {
+                var sc = scripts[si].textContent || '';
+                if (sc.length < 20 || sc.length > 3000000) continue;
+                var mfc = sc.match(/"fan_count"\s*:\s*(\d+)/);
+                if (mfc && parseInt(mfc[1]) > 0) return 'json:fan_count=' + mfc[1];
+                var mfl = sc.match(/"follower_count"\s*:\s*(\d+)/);
+                if (mfl && parseInt(mfl[1]) > 0) return 'json:follower_count=' + mfl[1];
+                var msc2 = sc.match(/"subscribers_count"\s*:\s*(\d+)/);
+                if (msc2 && parseInt(msc2[1]) > 0) return 'json:subscribers_count=' + msc2[1];
+            }
+            // Strategy 1: DOM text
+            var t = document.body.innerText || '';
+            var m = t.match(/(\d[\d,.]*\s*[KkMm]?)\s*(followers?|follow this|people follow|likes?)/i);
+            if (m) return 'text:' + m[0];
+            // Strategy 2: aria-labels
+            var metas = Array.prototype.slice.call(document.querySelectorAll('[aria-label]'));
+            for (var j = 0; j < metas.length; j++) {
+                var al = metas[j].getAttribute('aria-label') || '';
+                var fm = al.match(/(\d[\d,.]*\s*[KkMm]?)\s*(follow(?:ers?)?|likes?)/i);
+                if (fm) return 'aria:' + fm[0];
+            }
+            return 'NOTHING FOUND - body snippet: ' + t.slice(0, 200);
+        """)
+        print(f"Extraction result: {result!r}")
+        count = parse_follower_count(str(result)) if result and ':' not in str(result)[:5] else 0
+        print(f"Parsed count: {count}")
 
 finally:
     print("\nClosing browser...")
