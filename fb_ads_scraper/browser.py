@@ -297,7 +297,58 @@ navigator.permissions.query = (params) =>
 """
 
 
-def _make_driver(headless: bool = False) -> webdriver.Chrome:
+def _build_proxy_extension(host: str, port: str, user: str, password: str) -> bytes:
+    """Return a .crx-style zip bytes that configures Chrome to use an auth proxy."""
+    import zipfile, io as _io
+    manifest = json.dumps({
+        "version": "1.0.0", "manifest_version": 2, "name": "MG Proxy",
+        "permissions": [
+            "proxy", "tabs", "unlimitedStorage", "storage",
+            "<all_urls>", "webRequest", "webRequestBlocking",
+        ],
+        "background": {"scripts": ["bg.js"]},
+        "minimum_chrome_version": "22.0.0",
+    })
+    bg = (
+        f'var cfg={{mode:"fixed_servers",rules:{{singleProxy:{{scheme:"http",'
+        f'host:"{host}",port:parseInt("{port}")}},bypassList:["localhost"]}}}};\n'
+        f'chrome.proxy.settings.set({{value:cfg,scope:"regular"}},function(){{}});\n'
+        f'chrome.webRequest.onAuthRequired.addListener(\n'
+        f'  function(){{return{{authCredentials:{{username:"{user}",password:"{password}"}}}};}},\n'
+        f'  {{urls:["<all_urls>"]}},["blocking"]\n'
+        f');\n'
+    )
+    buf = _io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("manifest.json", manifest)
+        zf.writestr("bg.js", bg)
+    return buf.getvalue()
+
+
+def _apply_proxy(opts, proxy: str):
+    """Parse proxy URL and apply to ChromeOptions (supports user:pass@host:port)."""
+    if not proxy:
+        return
+    from urllib.parse import urlparse
+    parsed = urlparse(proxy if "://" in proxy else f"http://{proxy}")
+    host = parsed.hostname or ""
+    port = str(parsed.port or 80)
+    user = parsed.username or ""
+    pwd  = parsed.password or ""
+    if user and pwd:
+        ext_bytes = _build_proxy_extension(host, port, user, pwd)
+        import tempfile, os as _os
+        ext_path = _os.path.join(tempfile.gettempdir(), "mg_proxy_ext.zip")
+        with open(ext_path, "wb") as f:
+            f.write(ext_bytes)
+        opts.add_extension(ext_path)
+        logger.info(f"Proxy: {host}:{port} (authenticated)")
+    else:
+        opts.add_argument(f"--proxy-server={host}:{port}")
+        logger.info(f"Proxy: {host}:{port}")
+
+
+def _make_driver(headless: bool = False, proxy: str = "") -> webdriver.Chrome:
     # Prefer undetected-chromedriver — patches Chrome binary fingerprints that
     # Facebook's bot detection specifically checks.
     try:
@@ -311,6 +362,8 @@ def _make_driver(headless: bool = False) -> webdriver.Chrome:
         opts.add_argument("--disable-dev-shm-usage")
         opts.add_argument("--window-size=1366,900")
         opts.add_argument("--lang=en-US")
+        if proxy:
+            _apply_proxy(opts, proxy)
 
         # Suppress uc's stdout progress bar (it uses \r which corrupts Rich output)
         _old_stdout = sys.stdout
@@ -344,6 +397,8 @@ def _make_driver(headless: bool = False) -> webdriver.Chrome:
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     )
+    if proxy:
+        _apply_proxy(opts, proxy)
     driver = webdriver.Chrome(options=opts)
     driver.execute_cdp_cmd(
         "Page.addScriptToEvaluateOnNewDocument",
@@ -353,9 +408,10 @@ def _make_driver(headless: bool = False) -> webdriver.Chrome:
 
 
 class AdsLibraryBrowser:
-    def __init__(self, countries: list[str], headless: bool = False):
+    def __init__(self, countries: list[str], headless: bool = False, proxy: str = ""):
         self.countries = countries
         self.headless = headless
+        self.proxy = proxy
         self._driver: Optional[webdriver.Chrome] = None
         self._cookies_loaded = False
 
@@ -368,7 +424,7 @@ class AdsLibraryBrowser:
 
     def start(self):
         logger.info("Starting Chrome browser...")
-        self._driver = _make_driver(headless=self.headless)
+        self._driver = _make_driver(headless=self.headless, proxy=self.proxy)
         if not self.headless:
             logger.info("Chrome window opened — don't close it during the scan.")
 

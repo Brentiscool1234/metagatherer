@@ -118,13 +118,15 @@ def _setup_logging(verbose: bool):
 @click.option("--verbose", "-v", is_flag=True, default=False, help="Debug logging.")
 @click.option("--discord-webhook", default=None, envvar="DISCORD_WEBHOOK_URL",
               help="Discord webhook URL for winner notifications (or set DISCORD_WEBHOOK_URL in .env).")
+@click.option("--proxy", default=None, envvar="PROXY_URL",
+              help="Proxy URL, e.g. http://user:pass@host:port (or set PROXY_URL in .env).")
 def main(
     countries, days, min_ads, min_followers, max_followers, max_total_ads,
     min_active_ratio,
     niche, keywords, max_keywords, keyword_depth, max_ads_per_keyword,
     video_only, require_shop_now, headless, output, no_csv,
     facebook, tiktok, tiktok_login, state_file, reset, verbose, until_winner,
-    target_winners, keyword_cap, discord_webhook,
+    target_winners, keyword_cap, discord_webhook, proxy,
 ):
     """MetaGatherer: Find winning ecommerce products in the Facebook Ads Library."""
     _setup_logging(verbose)
@@ -212,6 +214,7 @@ def main(
             state_file=state_file,
             reset=reset,
             niche=niche or None,
+            proxy=proxy or "",
         )
         # keyword_cap=0 means no limit — run BFS until winner(s) found naturally.
         # keyword_cap>0 is an explicit ceiling on total keywords searched.

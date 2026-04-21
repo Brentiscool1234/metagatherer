@@ -614,8 +614,10 @@ class FBAdsScraper:
         state_file: str = DEFAULT_STATE_FILE,
         reset: bool = False,
         niche: str = None,
+        proxy: str = "",
     ):
         self.countries = countries or ["US"]
+        self.proxy = proxy or ""
         self.days = days
         self.min_ads = min_ads
         self.min_followers = min_followers
@@ -793,7 +795,8 @@ class FBAdsScraper:
         except Exception:
             pass
 
-        browser = AdsLibraryBrowser(countries=self.countries, headless=self.headless)
+        browser = AdsLibraryBrowser(countries=self.countries, headless=self.headless,
+                                    proxy=getattr(self, "proxy", ""))
         browser.start()
 
         try:

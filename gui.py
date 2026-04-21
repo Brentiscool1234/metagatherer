@@ -187,6 +187,24 @@ class App(tk.Tk):
         self._check(left, "Headless (no visible browser)", self.v_headless)
         self._check(left, "Reset saved state",              self.v_reset)
 
+        # ── Proxy ─────────────────────────────────────────────────────────────
+        proxy_row = tk.Frame(left, bg=BG)
+        proxy_row.pack(fill="x", pady=2)
+        tk.Label(proxy_row, text="Proxy", font=FONT, bg=BG, fg=FG,
+                 width=9, anchor="w").pack(side="left")
+        self.v_proxy = tk.StringVar(value=os.environ.get("PROXY_URL", ""))
+        tk.Entry(proxy_row, textvariable=self.v_proxy, font=FONT,
+                 bg=BG2, fg=FG, insertbackground=FG, bd=0,
+                 highlightbackground=BG3, highlightthickness=1,
+                 show="*").pack(side="left", expand=True, fill="x")
+        tk.Button(proxy_row, text="Save", font=FONT, bg=BG3, fg=FG,
+                  activebackground=GREEN, bd=0, padx=6,
+                  command=self._save_proxy).pack(side="left", padx=(4, 0))
+        self.proxy_status = tk.Label(left, text="", font=("Segoe UI", 8),
+                                     bg=BG, fg=FG_DIM)
+        self.proxy_status.pack(anchor="w")
+        self._refresh_proxy_status()
+
         # ── Fast Mode (Apify) ────────────────────────────────────────────────
         self._section(left, "⚡ Fast Mode (Apify)")
         ap_row = tk.Frame(left, bg=BG)
@@ -618,6 +636,39 @@ class App(tk.Tk):
         else:
             self.apify_status.config(text="No key — Apify disabled", fg=FG_DIM)
 
+    def _save_proxy(self):
+        url = self.v_proxy.get().strip()
+        env_path = self._env_path()
+        lines = []
+        try:
+            with open(env_path) as f:
+                lines = [l for l in f.readlines() if not l.startswith("PROXY_URL=")]
+        except FileNotFoundError:
+            pass
+        if url:
+            lines.append(f"PROXY_URL={url}\n")
+        with open(env_path, "w") as f:
+            f.writelines(lines)
+        if url:
+            os.environ["PROXY_URL"] = url
+        else:
+            os.environ.pop("PROXY_URL", None)
+        self._refresh_proxy_status()
+
+    def _refresh_proxy_status(self):
+        url = self.v_proxy.get().strip()
+        if url:
+            from urllib.parse import urlparse
+            try:
+                p = urlparse(url if "://" in url else f"http://{url}")
+                label = f"{p.hostname}:{p.port}"
+                auth = "auth" if p.username else "no auth"
+                self.proxy_status.config(text=f"✓ Proxy set ({label}, {auth})", fg=GREEN)
+            except Exception:
+                self.proxy_status.config(text="✓ Proxy set", fg=GREEN)
+        else:
+            self.proxy_status.config(text="No proxy — direct connection", fg=FG_DIM)
+
     def _save_discord_webhook(self):
         url = self.v_discord_wh.get().strip()
         env_path = self._env_path()
@@ -885,6 +936,9 @@ class App(tk.Tk):
             cmd.append("--until-winner")
             cmd += ["--target-winners", str(self.v_target_winners.get())]
             cmd += ["--keyword-cap", str(self.v_keyword_cap.get())]
+        proxy = self.v_proxy.get().strip()
+        if proxy:
+            cmd += ["--proxy", proxy]
         wh = self.v_discord_wh.get().strip()
         if wh:
             cmd += ["--discord-webhook", wh]
