@@ -749,28 +749,42 @@ class AdsLibraryBrowser:
             # Only trigger this if follower count is still unknown — if known_followers
             # was passed by the caller (from Phase-1 Apify/API data), skip entirely.
             if follower_count == 0:
-                # Fallback: autocomplete search with country=ALL.
-                # Country-specific EU pages (e.g. BE) show a restricted "Ad category"
-                # UI so the autocomplete URL always uses country=ALL.
+                # Fallback: extract the advertiser's Facebook page URL from the
+                # Ads Library page header, navigate there, and read followers.
+                # Business pages are publicly viewable (unlike personal profiles).
                 try:
-                    page_name_from_dom = self._driver.execute_script(r"""
+                    _page_url = self._driver.execute_script(r"""
+                        var skip = ['/ads/library','/help','/policies','/login',
+                                    '/l.php','?','/ads/','facebook.com/ads'];
                         var links = Array.prototype.slice.call(
                             document.querySelectorAll('a[href*="facebook.com/"]'));
                         for (var i = 0; i < links.length; i++) {
-                            var t = (links[i].textContent || '').trim();
-                            if (t.length >= 3 && t.length <= 80
-                                    && links[i].href.indexOf('/ads/library') === -1
-                                    && links[i].href.indexOf('/help') === -1) {
-                                return t;
+                            var h = links[i].href || '';
+                            var bad = false;
+                            for (var s=0; s<skip.length; s++) {
+                                if (h.indexOf(skip[s]) !== -1) { bad=true; break; }
                             }
+                            if (bad) continue;
+                            var t = (links[i].textContent || '').trim();
+                            if (t.length >= 2 && t.length <= 80) return h;
                         }
                         return '';
                     """) or ""
-                except Exception:
-                    page_name_from_dom = ""
-                search_name = page_name_from_dom or page_id
-                follower_count = self.get_followers_from_autocomplete(search_name)
-                # Restore Ads Library page after autocomplete navigated away
+                    if _page_url and "facebook.com" in _page_url:
+                        self._driver.get(_page_url)
+                        time.sleep(2.5)
+                        _fl2 = self._driver.execute_script(_FOLLOWER_JS) or ""
+                        if _fl2:
+                            follower_count = parse_follower_count(_fl2)
+                            if follower_count:
+                                logger.debug(
+                                    f"  Followers (FB page) {page_id}: "
+                                    f"{_fl2!r} → {follower_count}"
+                                )
+                except Exception as _fpe:
+                    logger.debug(f"  FB-page follower lookup failed: {_fpe!s:.80}")
+
+                # Restore Ads Library page
                 try:
                     self._driver.get(url)
                     time.sleep(PAGE_LOAD_WAIT)
