@@ -931,17 +931,44 @@ class AdsLibraryBrowser:
                 except Exception:
                     pass
 
+            # Use JS to find, enable, and focus the first visible input —
+            # bypasses Selenium's is_enabled() gate which rejects FB's initially-
+            # disabled search boxes before we've had a chance to click/activate them.
+            _activated = self._driver.execute_script("""
+                var inputs = Array.prototype.slice.call(document.querySelectorAll('input'));
+                for (var i = 0; i < inputs.length; i++) {
+                    var inp = inputs[i];
+                    if (!inp.offsetParent) continue;   // not in layout / invisible
+                    inp.removeAttribute('disabled');
+                    inp.removeAttribute('readonly');
+                    inp.focus();
+                    inp.click();
+                    // Dispatch a synthetic click so FB's React handlers fire
+                    inp.dispatchEvent(new MouseEvent('mousedown', {bubbles:true}));
+                    inp.dispatchEvent(new MouseEvent('mouseup',   {bubbles:true}));
+                    inp.dispatchEvent(new MouseEvent('click',     {bubbles:true}));
+                    return inp;
+                }
+                return null;
+            """)
+            if _activated:
+                # Re-acquire as a Selenium element by tag/placeholder so we can send_keys
+                try:
+                    _all = self._driver.find_elements(By.XPATH, "//input")
+                    for _e in _all:
+                        try:
+                            if _e.is_displayed():
+                                search_box = _e
+                                break
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            time.sleep(0.7)   # let FB's JS open the Keywords/Advertisers mode panel
+
             if not search_box:
                 logger.debug(f"  Autocomplete: search box not found for {page_name!r}")
                 return 0
-
-            # Click the search box — this activates FB's JS and enables the input,
-            # and opens the mode-selection dropdown (Keywords vs Advertisers).
-            try:
-                search_box.click()
-                time.sleep(0.7)   # wait for JS to enable the input + show mode tabs
-            except Exception:
-                pass
 
             # Switch to "Advertisers" mode — only that mode shows follower counts
             # in the autocomplete ("4K follow this"). Try multiple selector strategies.
@@ -983,21 +1010,20 @@ class AdsLibraryBrowser:
             if not _switched:
                 logger.debug("  Autocomplete: could not find Advertisers tab — trying anyway")
 
-            # Re-find the input (switching modes may replace the DOM element)
+            # Re-activate the input after mode switch (JS removes disabled + focuses)
             try:
-                for _sel in [
-                    'input[placeholder*="Search"]',
-                    'input[type="search"]',
-                    'input[type="text"]',
-                ]:
-                    _els = self._driver.find_elements(By.CSS_SELECTOR, _sel)
-                    for _el in _els:
-                        if _el.is_displayed():
-                            search_box = _el
-                            break
-                    if search_box:
-                        break
-                search_box.click()
+                self._driver.execute_script("""
+                    var inputs = Array.prototype.slice.call(document.querySelectorAll('input'));
+                    for (var i = 0; i < inputs.length; i++) {
+                        if (!inputs[i].offsetParent) continue;
+                        inputs[i].removeAttribute('disabled');
+                        inputs[i].removeAttribute('readonly');
+                        inputs[i].focus();
+                        inputs[i].click();
+                        inputs[i].dispatchEvent(new MouseEvent('click', {bubbles:true}));
+                        break;
+                    }
+                """)
                 time.sleep(0.3)
             except Exception:
                 pass
@@ -1010,8 +1036,45 @@ class AdsLibraryBrowser:
             except Exception:
                 _pre_heading_count = 0
 
-            search_box.clear()
-            search_box.send_keys(page_name)
+            # Use JS to set value + fire input/change events, then send_keys for
+            # the autocomplete trigger. JS bypasses Selenium's disabled-element guard.
+            try:
+                self._driver.execute_script("""
+                    var inputs = Array.prototype.slice.call(document.querySelectorAll('input'));
+                    for (var i = 0; i < inputs.length; i++) {
+                        if (!inputs[i].offsetParent) continue;
+                        inputs[i].removeAttribute('disabled');
+                        inputs[i].removeAttribute('readonly');
+                        inputs[i].focus();
+                        break;
+                    }
+                """)
+                time.sleep(0.2)
+            except Exception:
+                pass
+            try:
+                search_box.clear()
+            except Exception:
+                pass
+            try:
+                search_box.send_keys(page_name)
+            except Exception:
+                # Last resort: JS-based character-by-character input
+                try:
+                    self._driver.execute_script("""
+                        var inp = null;
+                        var inputs = document.querySelectorAll('input');
+                        for (var i = 0; i < inputs.length; i++) {
+                            if (inputs[i].offsetParent) { inp = inputs[i]; break; }
+                        }
+                        if (!inp) return;
+                        inp.removeAttribute('disabled');
+                        inp.value = arguments[0];
+                        inp.dispatchEvent(new Event('input', {bubbles:true}));
+                        inp.dispatchEvent(new Event('change', {bubbles:true}));
+                    """, page_name)
+                except Exception:
+                    pass
 
             # Wait for the autocomplete dropdown to appear: poll until the heading
             # count grows (new headings = dropdown rendered) or 4s passes.
