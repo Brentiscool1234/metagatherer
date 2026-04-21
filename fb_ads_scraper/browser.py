@@ -493,7 +493,8 @@ class AdsLibraryBrowser:
         Wait until real ad cards appear. Retries consent dismissal if wall detected.
         Returns True if ads loaded.
         """
-        deadline = time.time() + timeout
+        start = time.time()
+        deadline = start + timeout
         while time.time() < deadline:
             try:
                 text = self._driver.execute_script(
@@ -507,13 +508,27 @@ class AdsLibraryBrowser:
                 ]):
                     return True
 
-                # Detect empty result pages early — no point waiting the full timeout
+                # Detect empty result pages early — no point waiting the full timeout.
+                # Explicit "no results" text from Facebook:
                 if any(x in text for x in [
                     "No results found", "no results found",
                     "0 results", "didn't find any ads",
+                    "We couldn't find", "no ads match",
+                    "Try searching for something else",
                 ]):
                     logger.debug("  Empty results page detected — skipping keyword")
                     return False
+
+                # Heuristic: page has rendered (>50 chars means not still loading)
+                # but text is short — no ad cards present. After 5s this means the
+                # search returned nothing (Facebook renders a blank content area
+                # without explicit "no results" text for many empty searches).
+                url = self._driver.current_url or ""
+                elapsed = time.time() - start
+                if elapsed > 5.0 and len(text) > 50 and len(text) < 600:
+                    if "q=" in url or "view_all_page_id=" in url:
+                        logger.debug("  Page loaded but no ad content — skipping (empty search)")
+                        return False
 
                 # Still showing consent wall — try again
                 if any(x in text.lower() for x in [
@@ -525,7 +540,7 @@ class AdsLibraryBrowser:
 
             except Exception:
                 pass
-            time.sleep(0.8)   # was 1.5
+            time.sleep(0.8)
 
         # Log what's on the page to help diagnose
         try:
