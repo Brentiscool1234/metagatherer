@@ -693,7 +693,7 @@ class AdsLibraryBrowser:
         country = self.countries[0] if self.countries else "US"
         if page_id.isdigit():
             url = ADS_LIBRARY_BASE + "?" + urlencode({
-                "active_status": "all",   # match Apify — see full ad history
+                "active_status": "active",
                 "ad_type": "all",
                 "country": country,
                 "search_type": "page",
@@ -701,7 +701,7 @@ class AdsLibraryBrowser:
             })
         else:
             url = ADS_LIBRARY_BASE + "?" + urlencode({
-                "active_status": "all",
+                "active_status": "active",
                 "ad_type": "all",
                 "country": country,
                 "q": page_id,

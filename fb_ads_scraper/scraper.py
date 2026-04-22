@@ -175,6 +175,30 @@ _FOOD_SIGNALS = {
     "snack subscription", "grocery delivery",
     "restaurant", "dine in", "takeout", "take-out", "catering",
     "coffee subscription", "wine subscription", "beer subscription",
+    # Fresh/farm produce
+    "farm fresh", "locally grown", "locally sourced", "farm to table",
+    "fresh mushroom", "dried mushroom", "gourmet mushroom", "grow your own mushroom",
+    "mushroom growing kit", "mushroom farm",
+}
+
+# Book / publishing signals — not physical dropshippable products
+_BOOK_SIGNALS = {
+    "paperback", "hardcover", "audiobook", "ebook", "e-book", "kindle edition",
+    "bestselling book", "get your copy today", "now available on amazon",
+    "chapter 1", "read the first chapter", "author of", "co-author",
+    "foreword by", "published by", "new york times bestseller",
+    "preorder the book", "pre-order the book",
+}
+
+# Digital / service products — nothing physical to dropship
+_DIGITAL_SIGNALS = {
+    "online course", "video course", "digital download", "downloadable",
+    "webinar", "masterclass", "coaching program", "group coaching",
+    "1-on-1 coaching", "1:1 coaching", "book a call", "book a session",
+    "schedule a call", "free consultation", "limited seats", "enroll now",
+    "lifetime access", "members area", "private community", "discord community",
+    "saas", "software subscription", "mobile app", "download the app",
+    "app store", "google play",
 }
 
 # Chemical / hazardous product signals — not suitable for dropshipping
@@ -209,26 +233,31 @@ def _min_price_in_text(text: str) -> float:
 
 
 def _is_blocked(raw: dict) -> bool:
-    """Return True if this ad should be skipped (marketplace, food, chemicals)."""
-    # Support both raw browser dicts (ad_body: str) and standardized dicts
-    # (ad_creative_bodies: list). Without this, Phase 1 food/chemical checks
-    # silently never fire because standardized dicts don't have "ad_body".
+    """Return True if this ad should be skipped (marketplace, food, books, digital, chemicals)."""
     ad_body = raw.get("ad_body") or ""
     if not ad_body:
         bodies = raw.get("ad_creative_bodies") or []
         if isinstance(bodies, list):
             ad_body = " ".join(b for b in bodies if b)
-    check = " ".join([
-        (raw.get("page_name") or "").lower(),
-        (raw.get("page_url") or "").lower(),
-        ad_body.lower(),
-    ])
+    page_name = (raw.get("page_name") or "").lower()
+    page_url  = (raw.get("page_url")  or "").lower()
+    body      = ad_body.lower()
+    check     = f"{page_name} {page_url} {body}"
+
     if any(term in check for term in _PLATFORM_BLOCKLIST):
         return True
-    body = ad_body.lower()
     if any(sig in body for sig in _FOOD_SIGNALS):
         return True
     if any(sig in body for sig in _CHEMICAL_SIGNALS):
+        return True
+    # Books: check both ad body AND page name (books rarely mention "paperback"
+    # in page name but the ad copy almost always does)
+    if any(sig in body for sig in _BOOK_SIGNALS):
+        return True
+    if any(sig in page_name for sig in {"books", "publishing", "publisher", "author"}):
+        return True
+    # Digital / service products: only ad body (page names can be anything)
+    if any(sig in body for sig in _DIGITAL_SIGNALS):
         return True
     return False
 
@@ -542,14 +571,12 @@ class WinningProduct:
             "sample_ad_body": self.sample_ad_body,
             "snapshot_url": self.sample_snapshot_url,
             "ads_library_url": (
-                # Numeric page IDs → direct page view via view_all_page_id (most reliable)
-                f"https://www.facebook.com/ads/library/?active_status=all"
-                f"&ad_type=all&country=US&search_type=page"
+                f"https://www.facebook.com/ads/library/?active_status=active"
+                f"&ad_type=all&country=ALL&search_type=page"
                 f"&view_all_page_id={self.page_id}"
                 if self.page_id.isdigit() else
-                # Username slug → Ads Library search by page name
-                f"https://www.facebook.com/ads/library/?active_status=all"
-                f"&ad_type=all&country=US&search_type=page"
+                f"https://www.facebook.com/ads/library/?active_status=active"
+                f"&ad_type=all&country=ALL&search_type=page"
                 f"&q={self.page_name or self.page_id}"
             ),
             "publisher_platforms": ", ".join(self.publisher_platforms),
