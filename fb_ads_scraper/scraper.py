@@ -1568,6 +1568,15 @@ class FBAdsScraper:
 
         winners.sort(key=lambda w: -w.score)
 
+        # Deduplicate by page_id — keep only the highest-scoring cluster per page
+        _seen_pids: set[str] = set()
+        _deduped = []
+        for w in winners:
+            if w.page_id not in _seen_pids:
+                _seen_pids.add(w.page_id)
+                _deduped.append(w)
+        winners = _deduped
+
         # AI dropshipping check — only on top candidates to avoid hundreds of calls
         if self.use_ai:
             for w in winners[:30]:
@@ -1645,9 +1654,10 @@ class FBAdsScraper:
                 f"followers={w.page_followers} | Shopify={w.is_shopify}"
             )
 
-        # AliExpress sourcing check — run in parallel for top candidates only
-        # (no point checking everything; limits extra network overhead)
-        self._run_sourcing_check(winners[:25])
+        # AliExpress sourcing check — only on the final evaluation (browser is live),
+        # not on interim quick-checks triggered by stop_on_winner (browser=None).
+        if browser is not None:
+            self._run_sourcing_check(winners[:25])
 
         return winners  # return all so output.py can split winners vs near-misses
 
