@@ -201,6 +201,26 @@ _DIGITAL_SIGNALS = {
     "app store", "google play",
 }
 
+# Consumable / ingestible signals — cannot be dropshipped (food, supplements,
+# pet treats, chews, gummies, powders, tinctures, etc.)
+_CONSUMABLE_SIGNALS = {
+    # Pet consumables
+    "dental stick", "dental chew", "dental treat", "dog treat", "cat treat",
+    "pet treat", "dog food", "cat food", "puppy food", "kitten food",
+    "dog biscuit", "dog chew", "rawhide", "bully stick", "jerky treat",
+    "kibble", "wet food", "dry food", "grain-free food", "raw diet",
+    "pet food", "bird seed", "fish food", "reptile food",
+    # Human supplements / ingestibles
+    "gummy", "gummies", "softgel", "capsule", "tablet", "tincture",
+    "protein powder", "pre-workout", "fat burner", "metabolism booster",
+    "collagen powder", "greens powder", "detox tea", "diet pill",
+    "weight loss pill", "probiotic", "prebiotic", "multivitamin",
+    "omega-3", "fish oil", "cbd oil", "hemp oil", "melatonin",
+    "ashwagandha", "turmeric supplement", "magnesium supplement",
+    "creatine powder", "whey protein", "meal replacement",
+    "appetite suppressant", "energy drink", "health shot",
+}
+
 # Chemical / hazardous product signals — not suitable for dropshipping
 _CHEMICAL_SIGNALS = {
     "bleach", "ammonia", "chlorine", "hydrochloric", "sulfuric acid",
@@ -247,6 +267,8 @@ def _is_blocked(raw: dict) -> bool:
     if any(term in check for term in _PLATFORM_BLOCKLIST):
         return True
     if any(sig in body for sig in _FOOD_SIGNALS):
+        return True
+    if any(sig in body for sig in _CONSUMABLE_SIGNALS):
         return True
     if any(sig in body for sig in _CHEMICAL_SIGNALS):
         return True
