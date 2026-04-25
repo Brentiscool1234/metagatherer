@@ -108,6 +108,9 @@ _KNOWN_BIG_BRANDS = {
     "booker prize", "booker prizes",
     "anaconda", "anaconda distribution",  # software company
     "hello nancy", "hellonancy",
+    # Pet media / entertainment (large established channels, not dropshipping stores)
+    "waggle", "waggletv", "waggle tv",
+    "the dodo", "thedodo", "dodo bird",
     # Insurance / finance
     "aetna", "cigna", "humana", "unitedhealth", "anthem",
     "vanguard", "schwab", "fidelity", "td ameritrade",
@@ -202,7 +205,7 @@ _DIGITAL_SIGNALS = {
 }
 
 # Consumable / ingestible signals — cannot be dropshipped (food, supplements,
-# pet treats, chews, gummies, powders, tinctures, etc.)
+# pet treats, chews, gummies, powders, tinctures, sprays, etc.)
 _CONSUMABLE_SIGNALS = {
     # Pet consumables
     "dental stick", "dental chew", "dental treat", "dog treat", "cat treat",
@@ -219,6 +222,11 @@ _CONSUMABLE_SIGNALS = {
     "ashwagandha", "turmeric supplement", "magnesium supplement",
     "creatine powder", "whey protein", "meal replacement",
     "appetite suppressant", "energy drink", "health shot",
+    # Sprays / topical liquids — applied to body, mouth, or skin; not shippable as physical goods
+    "dental spray", "mouth spray", "oral spray", "breath spray",
+    "nasal spray", "throat spray", "dog spray", "cat spray", "pet spray",
+    "calming spray", "anti-itch spray", "anti-scratch spray",
+    "flea spray", "tick spray", "de-shedding spray",
 }
 
 # Chemical / hazardous product signals — not suitable for dropshipping
@@ -261,14 +269,19 @@ def _is_blocked(raw: dict) -> bool:
             ad_body = " ".join(b for b in bodies if b)
     page_name = (raw.get("page_name") or "").lower()
     page_url  = (raw.get("page_url")  or "").lower()
+    # Also check the store/CTA URL — catches cases like trypalz.com/pages/dental-spray.
+    # Normalize hyphens→spaces so "dental-spray" matches the "dental spray" signal.
+    cta_url   = (raw.get("cta_url") or raw.get("_cta_url") or "").lower().replace("-", " ")
     body      = ad_body.lower()
-    check     = f"{page_name} {page_url} {body}"
+    check     = f"{page_name} {page_url} {cta_url} {body}"
 
     if any(term in check for term in _PLATFORM_BLOCKLIST):
         return True
     if any(sig in body for sig in _FOOD_SIGNALS):
         return True
-    if any(sig in body for sig in _CONSUMABLE_SIGNALS):
+    # Check body AND cta_url for consumable signals — the store URL often reveals
+    # the product type (e.g. /pages/dental-spray) even when ad copy doesn't.
+    if any(sig in body or sig in cta_url for sig in _CONSUMABLE_SIGNALS):
         return True
     if any(sig in body for sig in _CHEMICAL_SIGNALS):
         return True
@@ -284,6 +297,8 @@ def _is_blocked(raw: dict) -> bool:
     return False
 
 
+_MEDIA_PAGE_SUFFIXES = {" tv", "tv ", ".tv", "tv show", "channel", " media", "media ", "network", " show"}
+
 def _is_junk_page(page_name: str, page_id: str) -> bool:
     """Return True if this page is a login-wall artifact or known big brand."""
     name = (page_name or "").lower().strip()
@@ -296,6 +311,9 @@ def _is_junk_page(page_name: str, page_id: str) -> bool:
         return True
     # Numeric-only page IDs with generic names are often login artifacts
     if name in ("log in", "") and page_id.isdigit():
+        return True
+    # Media/entertainment channels (e.g. "WaggleTV", "PetMediaNetwork") are not stores
+    if any(sfx in name or name.endswith(sfx.strip()) for sfx in _MEDIA_PAGE_SUFFIXES):
         return True
     return False
 
